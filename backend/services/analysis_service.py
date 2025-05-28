@@ -1,0 +1,200 @@
+"""
+Analysis Service - Manages repository analysis tasks and WebSocket connections
+"""
+
+import asyncio
+import json
+import uuid
+from typing import Dict, Any, Optional
+from fastapi import WebSocket
+import logging
+
+from agents.whisper_analysis_agent import WhisperAnalysisAgent
+
+logger = logging.getLogger(__name__)
+
+class AnalysisService:
+    """Service to manage repository analysis tasks and WebSocket connections."""
+    
+    def __init__(self, openai_api_key: str):
+        self.agent = WhisperAnalysisAgent(openai_api_key=openai_api_key)
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.active_tasks: Dict[str, asyncio.Task] = {}
+        
+    async def create_task(self, repository_url: str, task_type: str = "explore-codebase") -> str:
+        """Create a new analysis task and return task ID."""
+        task_id = str(uuid.uuid4())
+        logger.info(f"Created analysis task {task_id} for repository: {repository_url}")
+        return task_id
+    
+    async def connect_websocket(self, task_id: str, websocket: WebSocket):
+        """Connect a WebSocket for real-time updates."""
+        await websocket.accept()
+        self.active_connections[task_id] = websocket
+        logger.info(f"WebSocket connected for task {task_id}")
+    
+    async def disconnect_websocket(self, task_id: str):
+        """Disconnect and cleanup WebSocket connection."""
+        if task_id in self.active_connections:
+            del self.active_connections[task_id]
+        
+        # Cancel any running task
+        if task_id in self.active_tasks:
+            self.active_tasks[task_id].cancel()
+            del self.active_tasks[task_id]
+        
+        logger.info(f"WebSocket disconnected for task {task_id}")
+    
+    async def send_message(self, task_id: str, message: Dict[str, Any]):
+        """Send a message to the WebSocket client."""
+        if task_id in self.active_connections:
+            try:
+                await self.active_connections[task_id].send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Failed to send message to {task_id}: {e}")
+                await self.disconnect_websocket(task_id)
+    
+    async def start_analysis(self, task_id: str, repository_url: str, task_type: str = "explore-codebase"):
+        """Start repository analysis with real-time updates."""
+        
+        # Create and track the analysis task
+        analysis_task = asyncio.create_task(self._run_analysis(task_id, repository_url, task_type))
+        self.active_tasks[task_id] = analysis_task
+        
+        try:
+            await analysis_task
+        except asyncio.CancelledError:
+            logger.info(f"Analysis task {task_id} was cancelled")
+        except Exception as e:
+            logger.error(f"Analysis task {task_id} failed: {e}")
+        finally:
+            # Cleanup
+            if task_id in self.active_tasks:
+                del self.active_tasks[task_id]
+    
+    async def _run_analysis(self, task_id: str, repository_url: str, task_type: str):
+        """Internal method to run the actual analysis."""
+        try:
+            # Send initial confirmation
+            await self.send_message(task_id, {
+                "type": "task.started",
+                "task_id": task_id,
+                "status": "running",
+                "repository_url": repository_url,
+                "task_type": task_type
+            })
+            
+            # Run the analysis with real-time updates
+            last_progress = 0
+            async for update in self.agent.analyze_repository(repository_url):
+                if update["type"] == "progress":
+                    current_progress = update["progress"]
+                    current_step = update["current_step"]
+                    
+                    # Add intermediate progress updates for smoother experience
+                    if current_progress > last_progress + 10:  # If jump is > 10%, add intermediate steps
+                        intermediate_steps = int((current_progress - last_progress) / 5)  # 5% increments
+                        for i in range(1, intermediate_steps):
+                            intermediate_progress = last_progress + (i * 5)
+                            if intermediate_progress < current_progress:
+                                await self.send_message(task_id, {
+                                    "type": "task.progress",
+                                    "task_id": task_id,
+                                    "current_step": f"{current_step} ({intermediate_progress:.0f}%)",
+                                    "progress": intermediate_progress,
+                                    "partial_results": update.get("partial_results", {})
+                                })
+                                # Small delay to make progress feel more natural
+                                await asyncio.sleep(0.2)
+                    
+                    # Send the actual progress update
+                    await self.send_message(task_id, {
+                        "type": "task.progress",
+                        "task_id": task_id,
+                        "current_step": current_step,
+                        "progress": current_progress,
+                        "partial_results": update.get("partial_results", {})
+                    })
+                    
+                    last_progress = current_progress
+                
+                elif update["type"] == "completed":
+                    # Send final results
+                    await self.send_message(task_id, {
+                        "type": "task.completed",
+                        "task_id": task_id,
+                        "results": {
+                            "summary": self._generate_summary(update["results"]),
+                            "statistics": self._generate_statistics(update["results"]),
+                            "detailed_results": {
+                                "whisper_analysis": {
+                                    "analysis": update["results"]["architectural_insights"],
+                                    "file_structure": update["results"]["file_structure"],
+                                    "language_analysis": update["results"]["language_analysis"],
+                                    "architecture_patterns": update["results"]["architecture_patterns"],
+                                    "main_components": update["results"]["main_components"],
+                                    "dependencies": update["results"]["dependencies"]
+                                }
+                            }
+                        }
+                    })
+                    break
+        
+        except Exception as e:
+            logger.error(f"Analysis failed for task {task_id}: {e}")
+            await self.send_message(task_id, {
+                "type": "task.error",
+                "task_id": task_id,
+                "error": f"Analysis failed: {str(e)}"
+            })
+    
+    def _generate_summary(self, results: Dict[str, Any]) -> str:
+        """Generate a summary from the analysis results."""
+        lang_analysis = results.get("language_analysis", {})
+        file_structure = results.get("file_structure", {})
+        patterns = results.get("architecture_patterns", [])
+        
+        primary_lang = lang_analysis.get("primary_language", "Unknown")
+        total_files = file_structure.get("total_files", 0)
+        total_lines = file_structure.get("total_lines", 0)
+        
+        summary = f"Analysis complete for {primary_lang} project with {total_files} files ({total_lines:,} lines of code)"
+        
+        if patterns:
+            summary += f". Detected architectural patterns: {', '.join(patterns[:3])}"
+        
+        return summary
+    
+    def _generate_statistics(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate statistics from the analysis results."""
+        lang_analysis = results.get("language_analysis", {})
+        file_structure = results.get("file_structure", {})
+        components = results.get("main_components", [])
+        patterns = results.get("architecture_patterns", [])
+        dependencies = results.get("dependencies", {})
+        
+        return {
+            "Files Analyzed": file_structure.get("total_files", 0),
+            "Lines of Code": file_structure.get("total_lines", 0),
+            "Languages Detected": len(lang_analysis.get("languages", {})),
+            "Main Components": len(components),
+            "Architecture Patterns": len(patterns),
+            "Dependency Groups": len(dependencies)
+        }
+    
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Get the status of a specific task."""
+        if task_id in self.active_connections:
+            return {"task_id": task_id, "status": "running"}
+        elif task_id in self.active_tasks:
+            return {"task_id": task_id, "status": "processing"}
+        else:
+            return {"task_id": task_id, "status": "not_found"}
+    
+    def get_active_connections_info(self) -> Dict[str, Any]:
+        """Get information about active connections."""
+        return {
+            "active_connections": len(self.active_connections),
+            "active_tasks": len(self.active_tasks),
+            "connection_ids": list(self.active_connections.keys())
+        } 
