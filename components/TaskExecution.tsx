@@ -66,6 +66,7 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
 
         // Connect WebSocket
         const ws = WhisperAPI.connectWebSocket(
+          taskResponse.websocket_url,
           taskResponse.task_id,
           repository,
           task,

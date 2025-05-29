@@ -88,6 +88,7 @@ export class WhisperAPI {
    * Connect to WebSocket for real-time updates
    */
   static connectWebSocket(
+    websocketUrl: string,
     taskId: string,
     repositoryUrl: string,
     taskType: string,
@@ -95,8 +96,7 @@ export class WhisperAPI {
     onError: (error: Event) => void,
     onClose: (event: CloseEvent) => void
   ): WebSocket {
-    const wsUrl = `ws://localhost:8000/ws/tasks/${taskId}`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(websocketUrl);
 
     ws.onopen = () => {
       console.log('WebSocket connected');
@@ -139,24 +139,6 @@ export class WhisperAPI {
     } catch (error) {
       console.error('Backend health check failed:', error);
       return false;
-    }
-  }
-
-  /**
-   * Get active connections info (for debugging)
-   */
-  static async getActiveConnections(): Promise<Record<string, unknown>> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/active-connections`);
-      
-      if (!response.ok) {
-        throw new Error(`Failed to get active connections: ${response.status}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error('Error getting active connections:', error);
-      throw error;
     }
   }
 }
