@@ -10,6 +10,8 @@ from fastapi import WebSocket
 import logging
 
 from agents.whisper_analysis_agent import WhisperAnalysisAgent
+from agents.smart_analysis_agent import SmartAnalysisAgent
+from core.tool_registry import get_tool_registry, initialize_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +19,45 @@ class AnalysisService:
     """Service to manage repository analysis tasks and WebSocket connections."""
     
     def __init__(self, openai_api_key: str):
-        self.agent = WhisperAnalysisAgent(openai_api_key=openai_api_key)
+        # Initialize both agents for backward compatibility
+        self.whisper_agent = WhisperAnalysisAgent(openai_api_key=openai_api_key)
+        self.smart_agent = SmartAnalysisAgent(openai_api_key=openai_api_key)
+        
         self.active_connections: Dict[str, WebSocket] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        self._initialized = False
+        
+    async def initialize(self):
+        """Initialize the analysis service and tool registry."""
+        if self._initialized:
+            return
+        
+        # Initialize tool registry
+        await initialize_tool_registry()
+        
+        self._initialized = True
+        logger.info("Analysis service initialized successfully")
         
     async def create_task(self, repository_url: str, task_type: str = "explore-codebase") -> str:
         """Create a new analysis task and return task ID."""
         task_id = str(uuid.uuid4())
         logger.info(f"Created analysis task {task_id} for repository: {repository_url}")
+        return task_id
+    
+    async def create_smart_task(
+        self, 
+        repository_url: str, 
+        context: str,
+        intent: Optional[str] = None,
+        target_languages: Optional[list] = None,
+        scope: str = "full",
+        depth: str = "comprehensive",
+        additional_params: Optional[Dict] = None
+    ) -> str:
+        """Create a new smart analysis task and return task ID."""
+        task_id = str(uuid.uuid4())
+        logger.info(f"Created smart analysis task {task_id} for repository: {repository_url}")
+        logger.info(f"Context: {context[:100]}...")
         return task_id
     
     async def connect_websocket(self, task_id: str, websocket: WebSocket):
@@ -55,10 +88,10 @@ class AnalysisService:
                 await self.disconnect_websocket(task_id)
     
     async def start_analysis(self, task_id: str, repository_url: str, task_type: str = "explore-codebase"):
-        """Start repository analysis with real-time updates."""
+        """Start repository analysis with real-time updates (legacy method)."""
         
         # Create and track the analysis task
-        analysis_task = asyncio.create_task(self._run_analysis(task_id, repository_url, task_type))
+        analysis_task = asyncio.create_task(self._run_legacy_analysis(task_id, repository_url, task_type))
         self.active_tasks[task_id] = analysis_task
         
         try:
@@ -72,8 +105,44 @@ class AnalysisService:
             if task_id in self.active_tasks:
                 del self.active_tasks[task_id]
     
-    async def _run_analysis(self, task_id: str, repository_url: str, task_type: str):
-        """Internal method to run the actual analysis."""
+    async def start_smart_analysis(
+        self, 
+        task_id: str, 
+        repository_url: str, 
+        context: str,
+        intent: Optional[str] = None,
+        target_languages: Optional[list] = None,
+        scope: str = "full",
+        depth: str = "comprehensive",
+        additional_params: Optional[Dict] = None
+    ):
+        """Start smart repository analysis with AI-powered tool selection."""
+        
+        # Ensure service is initialized
+        await self.initialize()
+        
+        # Create and track the smart analysis task
+        analysis_task = asyncio.create_task(
+            self._run_smart_analysis(
+                task_id, repository_url, context, intent, target_languages, 
+                scope, depth, additional_params
+            )
+        )
+        self.active_tasks[task_id] = analysis_task
+        
+        try:
+            await analysis_task
+        except asyncio.CancelledError:
+            logger.info(f"Smart analysis task {task_id} was cancelled")
+        except Exception as e:
+            logger.error(f"Smart analysis task {task_id} failed: {e}")
+        finally:
+            # Cleanup
+            if task_id in self.active_tasks:
+                del self.active_tasks[task_id]
+    
+    async def _run_legacy_analysis(self, task_id: str, repository_url: str, task_type: str):
+        """Internal method to run the legacy analysis using WhisperAnalysisAgent."""
         try:
             # Send initial confirmation
             await self.send_message(task_id, {
@@ -86,7 +155,7 @@ class AnalysisService:
             
             # Run the analysis with real-time updates
             last_progress = 0
-            async for update in self.agent.analyze_repository(repository_url):
+            async for update in self.whisper_agent.analyze_repository(repository_url):
                 if update["type"] == "progress":
                     current_progress = update["progress"]
                     current_step = update["current_step"]
@@ -141,11 +210,69 @@ class AnalysisService:
                     break
         
         except Exception as e:
-            logger.error(f"Analysis failed for task {task_id}: {e}")
+            logger.error(f"Legacy analysis failed for task {task_id}: {e}")
             await self.send_message(task_id, {
                 "type": "task.error",
                 "task_id": task_id,
                 "error": f"Analysis failed: {str(e)}"
+            })
+    
+    async def _run_smart_analysis(
+        self,
+        task_id: str,
+        repository_url: str, 
+        context: str,
+        intent: Optional[str] = None,
+        target_languages: Optional[list] = None,
+        scope: str = "full",
+        depth: str = "comprehensive",
+        additional_params: Optional[Dict] = None
+    ):
+        """Internal method to run smart analysis using SmartAnalysisAgent."""
+        try:
+            # Send initial confirmation
+            await self.send_message(task_id, {
+                "type": "smart_task.started",
+                "task_id": task_id,
+                "status": "running",
+                "repository_url": repository_url,
+                "context": context,
+                "intent": intent,
+                "scope": scope,
+                "depth": depth
+            })
+            
+            # Build additional parameters
+            if additional_params is None:
+                additional_params = {}
+            
+            if intent:
+                additional_params["intent"] = intent
+            if target_languages:
+                additional_params["target_languages"] = target_languages
+            if scope:
+                additional_params["scope"] = scope
+            if depth:
+                additional_params["depth"] = depth
+            
+            # Run smart analysis with real-time updates
+            async for update in self.smart_agent.analyze_repository(
+                repository_url, context, additional_params
+            ):
+                # Forward all updates to the client
+                update["task_id"] = task_id
+                await self.send_message(task_id, update)
+                
+                # Break on completion or error
+                if update["type"] in ["completed", "error"]:
+                    break
+        
+        except Exception as e:
+            logger.error(f"Smart analysis failed for task {task_id}: {e}")
+            await self.send_message(task_id, {
+                "type": "task.error",
+                "task_id": task_id,
+                "error": f"Smart analysis failed: {str(e)}"
             })
     
     def _generate_summary(self, results: Dict[str, Any]) -> str:
@@ -197,4 +324,22 @@ class AnalysisService:
             "active_connections": len(self.active_connections),
             "active_tasks": len(self.active_tasks),
             "connection_ids": list(self.active_connections.keys())
-        } 
+        }
+    
+    async def get_tool_registry_info(self) -> Dict[str, Any]:
+        """Get information about the tool registry."""
+        await self.initialize()
+        
+        try:
+            registry = await get_tool_registry()
+            return registry.get_registry_info()
+        except Exception as e:
+            logger.error(f"Failed to get tool registry info: {e}")
+            return {
+                "total_tools": 0,
+                "healthy_tools": 0,
+                "capabilities": [],
+                "supported_languages": [],
+                "tools": {},
+                "error": str(e)
+            } 
