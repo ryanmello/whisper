@@ -171,6 +171,14 @@ export default function TaskSelector({
   const [aiAnalysis, setAIAnalysis] = useState<AIAnalysis | null>(null);
   const [isAnalyzingIntent, setIsAnalyzingIntent] = useState(false);
 
+  // Helper function to scroll to top smoothly
+  const scrollToTop = () => {
+    window.scrollTo({
+      top: 0,
+      behavior: 'smooth'
+    });
+  };
+
   // Generate context suggestions
   const suggestions = generateContextSuggestions(repository);
 
@@ -187,6 +195,11 @@ export default function TaskSelector({
 
     loadToolsInfo();
   }, []);
+
+  // Scroll to top when component mounts or analysis mode changes
+  useEffect(() => {
+    scrollToTop();
+  }, [analysisMode]);
 
   // Manual AI intent analysis function
   const analyzeIntentManually = async () => {

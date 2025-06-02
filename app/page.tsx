@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavigationHeader, StepIndicator } from "@/components/ui/navigation";
 import RepositorySelector from "@/components/RepositorySelector";
 import TaskSelector from "@/components/TaskSelector";
@@ -42,9 +42,24 @@ export default function Home() {
   const [smartAnalysisContext, setSmartAnalysisContext] = useState<string>("");
   const [smartAnalysisOptions, setSmartAnalysisOptions] = useState<SmartAnalysisOptions>({});
 
+  // Helper function to scroll to top smoothly
+  const scrollToTop = () => {
+    window.scrollTo({
+      top: 0,
+      behavior: 'smooth'
+    });
+  };
+
+  // Scroll to top whenever the step changes
+  useEffect(() => {
+    scrollToTop();
+  }, [currentStep]);
+
   const handleRepositorySelect = (repo: string) => {
     setSelectedRepository(repo);
     setCurrentStep("task");
+    // Scroll to top when navigating to task selection
+    scrollToTop();
   };
 
   const handleTaskSelect = (task: string) => {
@@ -53,12 +68,16 @@ export default function Home() {
 
   const handleStartTask = () => {
     setCurrentStep("execution");
+    // Scroll to top when starting task execution
+    scrollToTop();
   };
 
   const handleStartSmartTask = (context: string, options?: SmartAnalysisOptions) => {
     setSmartAnalysisContext(context);
     setSmartAnalysisOptions(options || {});
     setCurrentStep("smart-execution");
+    // Scroll to top when starting smart analysis
+    scrollToTop();
   };
 
   const handleBack = () => {
@@ -79,6 +98,8 @@ export default function Home() {
         setCurrentStep("repository");
         break;
     }
+    // Scroll to top when navigating back
+    scrollToTop();
   };
 
   const getNavigationProps = () => {
