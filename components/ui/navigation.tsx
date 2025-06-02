@@ -79,12 +79,14 @@ export function NavigationHeader({
                           }
                         >
                           {item.href ? (
-                            <button
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => item.href && console.log('Navigate to:', item.href)}
-                              className="hover:underline"
+                              className="hover:underline h-auto p-0 text-inherit font-inherit"
                             >
                               {item.label}
-                            </button>
+                            </Button>
                           ) : (
                             item.label
                           )}
