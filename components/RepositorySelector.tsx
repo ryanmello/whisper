@@ -1,12 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { LoadingSpinner, LoadingCard, LoadingSkeleton } from "@/components/ui/loading";
+import { LoadingSpinner, LoadingCard } from "@/components/ui/loading";
 import { StatusIndicator, StatusBadge } from "@/components/ui/status";
 import { validateGitHubUrl } from "@/lib/api";
 import { 
@@ -58,42 +56,9 @@ export default function RepositorySelector({ onRepoSelect }: RepositorySelectorP
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
 
-  // Check for stored GitHub token on component mount
-  useEffect(() => {
-    const checkStoredAuth = async () => {
-      setIsCheckingAuth(true);
-      const storedToken = localStorage.getItem("github_token");
-      
-      if (storedToken) {
-        setToken(storedToken);
-        await handleTokenConnect(storedToken);
-      }
-      
-      setIsCheckingAuth(false);
-    };
-
-    checkStoredAuth();
-  }, []);
-
   const GITHUB_CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
 
-  const handleGitHubAuth = () => {
-    // Check if GitHub OAuth is properly configured
-    if (!GITHUB_CLIENT_ID || GITHUB_CLIENT_ID.trim() === '') {
-      setError("GitHub OAuth not configured. Please use the token option below.");
-      setShowTokenInput(true);
-      return;
-    }
-
-    const REDIRECT_URI = "http://localhost:3000/auth/callback";
-    const SCOPES = "repo user";
-    const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}`;
-    
-    console.log('Redirecting to GitHub OAuth:', githubAuthUrl);
-    window.location.href = githubAuthUrl;
-  };
-
-  const handleTokenConnect = async (providedToken?: string) => {
+  const handleTokenConnect = useCallback(async (providedToken?: string) => {
     const activeToken = providedToken || token;
     if (!activeToken.trim()) {
       setError("Please enter a GitHub token");
@@ -146,6 +111,39 @@ export default function RepositorySelector({ onRepoSelect }: RepositorySelectorP
     } finally {
       setIsLoading(false);
     }
+  }, [token]);
+
+  // Check for stored GitHub token on component mount
+  useEffect(() => {
+    const checkStoredAuth = async () => {
+      setIsCheckingAuth(true);
+      const storedToken = localStorage.getItem("github_token");
+      
+      if (storedToken) {
+        setToken(storedToken);
+        await handleTokenConnect(storedToken);
+      }
+      
+      setIsCheckingAuth(false);
+    };
+
+    checkStoredAuth();
+  }, [handleTokenConnect]);
+
+  const handleGitHubAuth = () => {
+    // Check if GitHub OAuth is properly configured
+    if (!GITHUB_CLIENT_ID || GITHUB_CLIENT_ID.trim() === '') {
+      setError("GitHub OAuth not configured. Please use the token option below.");
+      setShowTokenInput(true);
+      return;
+    }
+
+    const REDIRECT_URI = "http://localhost:3000/auth/callback";
+    const SCOPES = "repo user";
+    const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}`;
+    
+    console.log('Redirecting to GitHub OAuth:', githubAuthUrl);
+    window.location.href = githubAuthUrl;
   };
 
   const handleDisconnect = () => {

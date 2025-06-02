@@ -194,7 +194,6 @@ export default function Home() {
               onStartTask={handleStartTask}
               onStartSmartTask={handleStartSmartTask}
               selectedTask={selectedTask}
-              onBack={handleBack}
             />
           </div>
         );

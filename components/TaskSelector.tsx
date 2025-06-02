@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { extractRepoName, WhisperAPI, generateContextSuggestions, ToolRegistryInfo } from "@/lib/api";
+import { WhisperAPI, generateContextSuggestions, ToolRegistryInfo } from "@/lib/api";
 import { Zap, Brain, Clock, Target, Settings2, Lightbulb } from "lucide-react";
 
 interface TaskSelectorProps {
@@ -14,7 +14,6 @@ interface TaskSelectorProps {
   onStartTask: () => void;
   onStartSmartTask: (context: string, options?: any) => void;
   selectedTask: string | null;
-  onBack: () => void;
 }
 
 interface SmartAnalysisOptions {
@@ -36,23 +35,6 @@ interface AIAnalysis {
   recommendation: string;
   estimatedTime: string;
   suggestedApproach: 'single_analysis' | 'multiple_focused' | 'comprehensive';
-}
-
-// Debounce hook for AI analysis
-function useDebounce<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedValue(value);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [value, delay]);
-
-  return debouncedValue;
 }
 
 // AI-powered intent analysis function
@@ -169,7 +151,6 @@ export default function TaskSelector({
   onStartTask,
   onStartSmartTask,
   selectedTask, 
-  onBack 
 }: TaskSelectorProps) {
   
   const [analysisMode, setAnalysisMode] = useState<'quick' | 'smart'>('quick');
@@ -247,7 +228,7 @@ export default function TaskSelector({
   // Fallback to simple keyword detection if AI fails
   const fallbackToSimpleDetection = (text: string) => {
     const contextLower = text.toLowerCase();
-    let detectedIntents: DetectedIntent[] = [];
+    const detectedIntents: DetectedIntent[] = [];
 
     if (contextLower.includes('security') || contextLower.includes('vulnerabilit')) {
       detectedIntents.push({
@@ -310,10 +291,6 @@ export default function TaskSelector({
       Dependencies: "bg-cyan-100 text-cyan-800",
     };
     return colors[category] || "bg-gray-100 text-gray-800";
-  };
-
-  const handleContextSubmit = (context: string, options?: any) => {
-    onStartSmartTask(context, options);
   };
 
   // Smart Analysis helper functions

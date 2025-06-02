@@ -12,21 +12,82 @@ from models.api_models import (
 from core.app import get_analysis_service
 from services.openai_service import OpenAIService
 from config.settings import settings
+from core.context_analyzer import ContextAnalyzer
 
 router = APIRouter()
 
 @router.post("/analyze-intent", response_model=AIAnalysis)
 async def analyze_intent(request: IntentAnalysisRequest):
-    """Analyze user intent using OpenAI API."""
-    openai_service = OpenAIService()
+    """Analyze user intent using our advanced multi-action context analyzer."""
     
     try:
-        analysis = await openai_service.analyze_intent(
-            context=request.context,
-            repository=request.repository,
-            max_tokens=request.maxTokens or 200
+        # Use our new multi-action context analyzer with proper async handling
+        analyzer = ContextAnalyzer()
+        
+        # First try AI parsing directly (proper async)
+        ai_result = await analyzer._parse_intent_with_ai(request.context)
+        
+        if ai_result:
+            # AI parsing successful
+            parsed_intent = ai_result
+        else:
+            # Fall back to rule-based parsing
+            parsed_intent = analyzer._parse_intent_fallback(request.context)
+        
+        # Convert our multi-action format to the expected AIAnalysis format
+        detected_intents = []
+        
+        for action in parsed_intent.actions:
+            # Map our analysis actions to the expected intent types
+            intent_type_mapping = {
+                "find_vulnerabilities": "Security Analysis",
+                "security_audit": "Security Analysis", 
+                "explore": "Architecture Analysis",
+                "analyze_performance": "Performance Analysis",
+                "code_quality": "Code Quality Analysis",
+                "documentation": "Documentation Analysis",
+                "dependency_analysis": "Dependency Analysis",
+                "test_coverage": "Test Coverage Analysis",
+                "compliance_check": "Compliance Analysis"
+            }
+            
+            intent_type = intent_type_mapping.get(action.intent, "General Analysis")
+            
+            detected_intents.append({
+                "type": intent_type,
+                "confidence": action.confidence,
+                "keywords": [],  # Keywords are handled internally by our AI system
+                "suggestedScope": "security_focused" if "security" in action.intent else "full"
+            })
+        
+        # Determine complexity and approach
+        complexity_mapping = {
+            "simple": "simple",
+            "moderate": "moderate", 
+            "complex": "comprehensive"
+        }
+        
+        complexity = complexity_mapping.get(parsed_intent.analysis_complexity, "moderate")
+        
+        # Determine suggested approach based on number of actions
+        if len(parsed_intent.actions) == 1:
+            suggested_approach = "focused"
+        elif len(parsed_intent.actions) <= 3:
+            suggested_approach = "balanced"
+        else:
+            suggested_approach = "comprehensive"
+        
+        # Create AI analysis response
+        analysis = AIAnalysis(
+            intents=detected_intents,
+            complexity=complexity,
+            recommendation=f"Detected {len(parsed_intent.actions)} analysis action(s): {', '.join([a.intent.replace('_', ' ') for a in parsed_intent.actions])}. {parsed_intent.reasoning}",
+            estimatedTime=f"{len(parsed_intent.actions) * 3}-{len(parsed_intent.actions) * 5} min",
+            suggestedApproach=suggested_approach
         )
+        
         return analysis
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Intent analysis failed: {str(e)}")
 

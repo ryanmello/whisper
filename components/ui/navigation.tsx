@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ChevronLeft, Home, Settings, HelpCircle } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 
 interface BreadcrumbItem {
   label: string;

@@ -8,8 +8,10 @@ the appropriate tools to perform comprehensive repository analysis.
 import asyncio
 import time
 import tempfile
+import shutil
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from pathlib import Path
+from dataclasses import dataclass
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -114,19 +116,19 @@ class SmartAnalysisAgent:
             
             # Parse the original intent to get secondary intents
             parsed_intent = self.context_analyzer._parse_intent(context_text)
-            logger.info(f"Parsed intent - Primary: {parsed_intent.primary_intent}, Secondary: {parsed_intent.secondary_intents}")
+            logger.info(f"Parsed intent - Actions: {[(a.intent, a.priority) for a in parsed_intent.actions]}")
             
-            # Find tools for primary intent
+            # Find tools for all identified actions
             suitable_tools = registry.find_suitable_tools(context)
             
-            # Find tools for secondary intents
-            secondary_tools = set()
-            for secondary_intent in parsed_intent.secondary_intents:
-                # Create a temporary context with the secondary intent
-                secondary_context = AnalysisContext(
+            # Find tools for additional actions
+            additional_tools = set()
+            for action in parsed_intent.actions[1:]:  # Skip first action (already handled)
+                # Create a temporary context with the action intent
+                action_context = AnalysisContext(
                     repository_path=context.repository_path,
                     repository_url=context.repository_url,
-                    intent=secondary_intent,
+                    intent=action.intent,
                     target_languages=context.target_languages,
                     scope=context.scope,
                     specific_files=context.specific_files,
@@ -134,14 +136,14 @@ class SmartAnalysisAgent:
                     additional_params=context.additional_params
                 )
                 
-                secondary_suitable = registry.find_suitable_tools(secondary_context)
-                for tool in secondary_suitable:
+                action_tools = registry.find_suitable_tools(action_context)
+                for tool in action_tools:
                     if tool not in suitable_tools:
-                        secondary_tools.add(tool)
-                        logger.info(f"Added tool '{tool.metadata.name}' for secondary intent '{secondary_intent}'")
+                        additional_tools.add(tool)
+                        logger.info(f"Added tool '{tool.metadata.name}' for action '{action.intent}' (priority {action.priority})")
             
             # Combine all tools
-            all_suitable_tools = suitable_tools + list(secondary_tools)
+            all_suitable_tools = suitable_tools + list(additional_tools)
             
             if not all_suitable_tools:
                 logger.warning("No suitable tools found for context")
@@ -603,54 +605,60 @@ class SmartAnalysisAgent:
             if result.success:
                 combined_results[tool_name] = result.results
         
-        # Get original context to determine focus
-        original_context = context.additional_params.get('original_context', '').lower()
+        # Get the parsed intent from context analyzer
+        context_analyzer = ContextAnalyzer()
+        parsed_intent = context_analyzer._parse_intent(context.additional_params.get('original_context', ''))
         
-        # Create contextual prompt based on intent and original context
-        if context.intent == "explore" and any(keyword in original_context for keyword in ["architectural", "architecture", "overview", "design", "structure"]):
-            # Focus on architecture for exploration requests asking for architectural overview
-            system_prompt = """You are an expert software architect. 
-            Analyze the provided repository analysis results and generate architectural insights.
-            
-            Focus specifically on:
-            1. Overall architecture and design patterns
-            2. Code organization and structure
-            3. Component relationships and dependencies
-            4. Design principles and architectural decisions
-            5. Code quality and maintainability
-            6. Key recommendations for architectural improvements
-            
-            Provide actionable insights that would be valuable for developers and architects.
-            Keep the focus on architecture and code organization rather than security vulnerabilities."""
-            
-        elif context.intent in ["find_vulnerabilities", "security_audit", "security"]:
-            # Security-focused analysis
-            system_prompt = """You are an expert security analyst and software architect. 
-            Analyze the provided repository analysis results and generate comprehensive security insights.
-            
-            Focus on:
-            1. Security vulnerabilities and threats
-            2. Security best practices compliance
-            3. Risk assessment and mitigation
-            4. Authentication and authorization patterns
-            5. Data protection and privacy considerations
-            6. Key security recommendations
-            
-            Provide actionable security insights that would be valuable for security teams and developers."""
-            
+        # Determine mixed intent scenario
+        has_multiple_intents = len(parsed_intent.actions) > 1
+        
+        if has_multiple_intents:
+            # Multiple intents detected - use comprehensive mixed analysis
+            prompt_template = f"""
+Based on the analysis results, provide comprehensive insights covering multiple aspects:
+
+PRIMARY INTENT: {parsed_intent.actions[0].intent}
+SECONDARY INTENTS: {', '.join([a.intent for a in parsed_intent.actions[1:] if a.priority > 0])}
+CONFIDENCE: {parsed_intent.overall_confidence}
+REASONING: {parsed_intent.reasoning}
+
+Analysis Context: {{context}}
+Tool Results: {{results}}
+
+Please provide a comprehensive analysis that addresses all detected intents:
+
+1. **{parsed_intent.actions[0].intent.replace('_', ' ').title()} Analysis** (Primary Focus):
+   - Detailed analysis based on the primary intent
+   - Key findings and insights
+   - Specific recommendations
+
+2. **{' & '.join([a.intent.replace('_', ' ').title() for a in parsed_intent.actions[1:] if a.priority > 0])} Analysis** (Secondary Focus):
+   - Additional insights from secondary intents
+   - Cross-cutting concerns and relationships
+   - Integrated recommendations
+
+3. **Integrated Recommendations**:
+   - Combined action items addressing all aspects
+   - Priority ordering of recommendations
+   - Implementation considerations
+
+Ensure the analysis is comprehensive and addresses the user's complete request while maintaining focus on the primary intent.
+"""
         else:
-            # General comprehensive analysis
-            system_prompt = """You are an expert software architect and analyst. 
-            Analyze the provided repository analysis results and generate comprehensive insights.
+            # Single intent - use focused analysis
+            intent_prompts = {
+                "explore": self._get_exploration_prompt(),
+                "find_vulnerabilities": self._get_security_prompt(),
+                "security_audit": self._get_security_prompt(),
+                "analyze_performance": self._get_performance_prompt(),
+                "code_quality": self._get_quality_prompt(),
+                "documentation": self._get_documentation_prompt()
+            }
             
-            Focus on:
-            1. Overall architecture and design patterns
-            2. Code quality and best practices
-            3. Performance implications
-            4. Maintainability and technical debt
-            5. Key recommendations for improvement
-            
-            Provide actionable insights that would be valuable for developers and architects."""
+            prompt_template = intent_prompts.get(
+                parsed_intent.actions[0].intent, 
+                self._get_exploration_prompt()  # Default fallback
+            )
         
         # Prepare context for the AI
         analysis_summary = f"""
@@ -671,7 +679,7 @@ class SmartAnalysisAgent:
         
         try:
             response = await self.llm.ainvoke([
-                SystemMessage(content=system_prompt),
+                SystemMessage(content=prompt_template),
                 HumanMessage(content=analysis_summary)
             ])
             
@@ -773,4 +781,94 @@ class SmartAnalysisAgent:
         except PermissionError as e:
             logger.warning(f"Permission denied cleaning up repository {repo_path}: {e}")
         except Exception as e:
-            logger.error(f"Failed to cleanup repository: {e}") 
+            logger.error(f"Failed to cleanup repository: {e}")
+    
+    def _get_exploration_prompt(self) -> str:
+        """Get prompt template for codebase exploration."""
+        return """You are an expert software architect. 
+        Analyze the provided repository analysis results and generate comprehensive architectural insights.
+        
+        Focus on:
+        1. Overall architecture and design patterns
+        2. Code organization and structure
+        3. Component relationships and dependencies
+        4. Design principles and architectural decisions
+        5. Code quality and maintainability
+        6. Key recommendations for architectural improvements
+        
+        Provide actionable insights that would be valuable for developers and architects.
+        
+        Analysis Context: {context}
+        Tool Results: {results}"""
+    
+    def _get_security_prompt(self) -> str:
+        """Get prompt template for security analysis."""
+        return """You are an expert security analyst and software architect. 
+        Analyze the provided repository analysis results and generate comprehensive security insights.
+        
+        Focus on:
+        1. Security vulnerabilities and threats
+        2. Security best practices compliance
+        3. Risk assessment and mitigation
+        4. Authentication and authorization patterns
+        5. Data protection and privacy considerations
+        6. Key security recommendations
+        
+        Provide actionable security insights that would be valuable for security teams and developers.
+        
+        Analysis Context: {context}
+        Tool Results: {results}"""
+    
+    def _get_performance_prompt(self) -> str:
+        """Get prompt template for performance analysis."""
+        return """You are an expert performance engineer and software architect.
+        Analyze the provided repository analysis results and generate performance insights.
+        
+        Focus on:
+        1. Performance bottlenecks and optimization opportunities
+        2. Resource utilization patterns
+        3. Scalability considerations
+        4. Algorithm efficiency and complexity analysis
+        5. Memory and CPU usage patterns
+        6. Key performance recommendations
+        
+        Provide actionable performance insights that would be valuable for optimization efforts.
+        
+        Analysis Context: {context}
+        Tool Results: {results}"""
+    
+    def _get_quality_prompt(self) -> str:
+        """Get prompt template for code quality analysis."""
+        return """You are an expert software quality engineer and architect.
+        Analyze the provided repository analysis results and generate code quality insights.
+        
+        Focus on:
+        1. Code quality metrics and best practices compliance
+        2. Technical debt identification and assessment
+        3. Maintainability and readability analysis
+        4. Design pattern usage and anti-patterns
+        5. Testing coverage and strategy
+        6. Key quality improvement recommendations
+        
+        Provide actionable quality insights that would be valuable for code improvement efforts.
+        
+        Analysis Context: {context}
+        Tool Results: {results}"""
+    
+    def _get_documentation_prompt(self) -> str:
+        """Get prompt template for documentation analysis."""
+        return """You are an expert technical writer and software architect.
+        Analyze the provided repository analysis results and generate documentation insights.
+        
+        Focus on:
+        1. Documentation coverage and quality
+        2. API documentation completeness
+        3. Code comments and inline documentation
+        4. README and getting started documentation
+        5. Architecture and design documentation
+        6. Key documentation improvement recommendations
+        
+        Provide actionable documentation insights that would improve project comprehensibility.
+        
+        Analysis Context: {context}
+        Tool Results: {results}""" 

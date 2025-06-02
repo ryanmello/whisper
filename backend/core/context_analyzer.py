@@ -6,6 +6,7 @@ analysis strategy and tool selection.
 """
 
 import re
+import json
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
@@ -16,17 +17,26 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class ParsedIntent:
-    """Result of intent parsing."""
-    primary_intent: str
-    secondary_intents: List[str]
+class AnalysisAction:
+    """Represents a single analysis action to be performed."""
+    intent: str
     confidence: float
+    priority: int  # 1 = highest priority, 2 = second highest, etc.
+    reasoning: str
+
+
+@dataclass
+class ParsedIntent:
+    """Result of intent parsing with multiple scalable actions."""
+    actions: List[AnalysisAction]
+    overall_confidence: float
+    analysis_complexity: str  # "simple", "moderate", "complex"
     reasoning: str
 
 
 @dataclass
 class LanguageDetection:
-    """Result of language detection from context."""
+    """Result of language detection."""
     detected_languages: List[str]
     confidence_scores: Dict[str, float]
     evidence: Dict[str, List[str]]
@@ -41,57 +51,51 @@ class ContextAnalyzer:
     """
     
     def __init__(self):
-        # Intent keywords mapping
-        self.intent_keywords = {
-            "explore": [
-                "explore", "analyze", "understand", "overview", "architecture",
-                "structure", "examine", "investigate", "scan", "review", "study"
-            ],
-            "find_vulnerabilities": [
-                "vulnerability", "vulnerabilities", "security", "exploit", "cve",
-                "weakness", "flaw", "breach", "attack", "threat", "risk"
-            ],
-            "security_audit": [
-                "audit", "security audit", "security review", "penetration",
-                "assessment", "compliance", "hardening"
-            ],
-            "analyze_performance": [
-                "performance", "optimization", "speed", "slow", "bottleneck",
-                "efficiency", "resource", "memory", "cpu"
-            ],
-            "code_quality": [
-                "quality", "best practices", "standards", "clean", "maintainability",
-                "technical debt", "smell", "refactor"
-            ],
-            "documentation": [
-                "document", "documentation", "readme", "comments", "explain"
-            ]
+        # Language patterns for detection
+        self.language_patterns = {
+            "go": [r"\bgo\b", r"golang", r"\.go$", r"go\.mod", r"go\.sum"],
+            "python": [r"\bpython\b", r"\.py$", r"requirements\.txt", r"setup\.py", r"pyproject\.toml"],
+            "javascript": [r"\bjavascript\b", r"\bjs\b", r"\.js$", r"package\.json", r"node_modules"],
+            "typescript": [r"\btypescript\b", r"\bts\b", r"\.ts$", r"tsconfig\.json"],
+            "java": [r"\bjava\b", r"\.java$", r"pom\.xml", r"build\.gradle"],
+            "rust": [r"\brust\b", r"\.rs$", r"cargo\.toml", r"cargo\.lock"],
+            "c++": [r"\bc\+\+\b", r"\bcpp\b", r"\.cpp$", r"\.cxx$", r"\.hpp$", r"cmake"],
+            "c": [r"\bc\b", r"\.c$", r"\.h$"],
+            "php": [r"\bphp\b", r"\.php$", r"composer\.json"],
+            "ruby": [r"\bruby\b", r"\.rb$", r"gemfile"],
+            "swift": [r"\bswift\b", r"\.swift$"],
+            "kotlin": [r"\bkotlin\b", r"\.kt$"],
+            "dart": [r"\bdart\b", r"\.dart$"],
+            "scala": [r"\bscala\b", r"\.scala$"]
         }
         
-        # Language keywords and patterns
-        self.language_patterns = {
-            "go": [
-                r"go\.mod", r"go\.sum", r"\.go$", "golang", "go lang", "go project"
-            ],
-            "python": [
-                r"requirements\.txt", r"setup\.py", r"\.py$", "python", "pip", "conda"
-            ],
-            "javascript": [
-                r"package\.json", r"\.js$", r"\.ts$", "node", "npm", "yarn", "typescript"
-            ],
-            "java": [
-                r"pom\.xml", r"build\.gradle", r"\.java$", "maven", "gradle"
-            ],
-            "rust": [
-                r"Cargo\.toml", r"\.rs$", "rust", "cargo"
-            ],
-            "c++": [
-                r"CMakeLists\.txt", r"Makefile", r"\.(cpp|cc|cxx)$", "c++", "cpp"
-            ],
-            "c": [
-                r"Makefile", r"\.c$", "c language"
-            ]
-        }
+        # Initialize OpenAI client - will be set when needed
+        self._llm = None
+    
+    def _get_llm(self):
+        """Get or initialize the OpenAI LLM client."""
+        if self._llm is None:
+            try:
+                from langchain_openai import ChatOpenAI
+                import os
+                
+                api_key = os.getenv('OPENAI_API_KEY')
+
+                if not api_key:
+                    logger.warning("No OpenAI API key found - falling back to rule-based intent detection")
+                    return None
+                
+                self._llm = ChatOpenAI(
+                    model="gpt-4",
+                    temperature=0,
+                    api_key=api_key
+                )
+                logger.info("Initialized OpenAI client for intent classification")
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenAI client: {e} - falling back to rule-based detection")
+                return None
+        
+        return self._llm
     
     def analyze_context(
         self, 
@@ -112,7 +116,7 @@ class ContextAnalyzer:
         """
         logger.info(f"Analyzing context: {context_text[:100]}...")
         
-        # Parse intent from context
+        # Parse intent from context using AI or fallback
         parsed_intent = self._parse_intent(context_text)
         
         # Detect target languages
@@ -128,7 +132,7 @@ class ContextAnalyzer:
         return AnalysisContext(
             repository_path="",  # Will be set when repository is cloned
             repository_url=repository_url,
-            intent=parsed_intent.primary_intent,
+            intent=parsed_intent.actions[0].intent,
             target_languages=language_detection.detected_languages,
             scope=scope,
             specific_files=specific_files,
@@ -136,9 +140,158 @@ class ContextAnalyzer:
             additional_params=additional_params or {}
         )
     
+    async def _parse_intent_with_ai(self, context_text: str) -> Optional[ParsedIntent]:
+        """
+        Use AI to parse intent from context text.
+        Dynamically discovers available analysis actions from the tool registry.
+        
+        Args:
+            context_text: Context text to analyze
+            
+        Returns:
+            ParsedIntent object or None if AI analysis fails
+        """
+        llm = self._get_llm()
+        if not llm:
+            return None
+        
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            
+            # Dynamically get available analysis actions from tool registry
+            # This makes the system scalable - no hardcoded lists to maintain
+            try:
+                from core.tool_registry import get_tool_registry
+                registry = await get_tool_registry()
+                available_tools = registry.get_all_tools()
+                
+                # Create dynamic action descriptions from tool metadata
+                action_descriptions = []
+                for tool in available_tools:
+                    action_descriptions.append(f"- {tool.metadata.intent}: {tool.metadata.description}")
+                
+                actions_list = "\n".join(action_descriptions)
+                
+                # If no tools are available, fall back to basic actions
+                if not action_descriptions:
+                    actions_list = """- explore: General codebase exploration and architecture analysis
+- find_vulnerabilities: Security vulnerability scanning and finding security issues"""
+                    
+            except Exception as e:
+                logger.debug(f"Could not load tool registry: {e}, using basic actions")
+                actions_list = """- explore: General codebase exploration and architecture analysis
+- find_vulnerabilities: Security vulnerability scanning and finding security issues"""
+            
+            system_prompt = f"""You are an expert code analysis assistant. Analyze the user's request and identify ALL relevant analysis actions they want performed.
+
+Available analysis actions:
+{actions_list}
+
+Analyze the user's request and return a JSON response with ALL applicable actions, ranked by priority:
+
+{{
+  "actions": [
+    {{
+      "intent": "most important action",
+      "confidence": 0.95,
+      "priority": 1,
+      "reasoning": "Why this is the primary action"
+    }},
+    {{
+      "intent": "second action",
+      "confidence": 0.85,
+      "priority": 2, 
+      "reasoning": "Why this action is also needed"
+    }},
+    {{
+      "intent": "third action if applicable",
+      "confidence": 0.75,
+      "priority": 3,
+      "reasoning": "Why this additional action is relevant"
+    }}
+  ],
+  "overall_confidence": 0.9,
+  "analysis_complexity": "complex",
+  "reasoning": "Overall analysis of the user's multi-faceted request"
+}}
+
+Guidelines:
+- Use ONLY the intent names from the available actions list above
+- Identify ALL relevant actions, not just 1-2 (can be 3-5+ for complex requests)
+- Rank actions by priority (1 = highest priority)
+- Each action should have high confidence (>0.7) to be included
+- Set analysis_complexity: "simple" (1 action), "moderate" (2-3 actions), "complex" (4+ actions)
+- Be comprehensive - users often want multiple types of analysis
+- Consider implied actions and relationships between different analysis types"""
+
+            user_message = f"User request: '{context_text}'"
+
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_message)
+            ])
+            
+            # Parse JSON response
+            response_text = response.content.strip()
+            if response_text.startswith('```json'):
+                response_text = response_text[7:-3].strip()
+            elif response_text.startswith('```'):
+                response_text = response_text[3:-3].strip()
+            
+            result = json.loads(response_text)
+            
+            actions = [
+                AnalysisAction(
+                    intent=action["intent"],
+                    confidence=action["confidence"],
+                    priority=action["priority"],
+                    reasoning=action["reasoning"]
+                ) for action in result["actions"]
+            ]
+            
+            return ParsedIntent(
+                actions=actions,
+                overall_confidence=result["overall_confidence"],
+                analysis_complexity=result["analysis_complexity"],
+                reasoning=result["reasoning"]
+            )
+            
+        except Exception as e:
+            logger.warning(f"AI intent parsing failed: {e}")
+            return None
+    
+    def _parse_intent_fallback(self, context_text: str) -> ParsedIntent:
+        """
+        Simple fallback when AI is not available.
+        Returns a basic exploration intent rather than complex keyword matching.
+        
+        Args:
+            context_text: Context text to analyze
+            
+        Returns:
+            ParsedIntent object with basic exploration action
+        """
+        logger.warning("AI intent parsing unavailable, using basic fallback")
+        
+        # Simple fallback: always return exploration with low confidence
+        # This avoids the need to maintain keyword lists that don't scale
+        action = AnalysisAction(
+            intent="explore",
+            confidence=0.5,
+            priority=1,
+            reasoning="AI unavailable - defaulting to basic exploration"
+        )
+        
+        return ParsedIntent(
+            actions=[action],
+            overall_confidence=0.5,
+            analysis_complexity="simple",
+            reasoning="AI intent analysis unavailable, using basic exploration fallback"
+        )
+    
     def _parse_intent(self, context_text: str) -> ParsedIntent:
         """
-        Parse the primary intent from context text.
+        Parse the primary intent from context text using AI or fallback.
         
         Args:
             context_text: Context text to analyze
@@ -146,57 +299,25 @@ class ContextAnalyzer:
         Returns:
             ParsedIntent object with analysis results
         """
-        context_lower = context_text.lower()
-        intent_scores = {}
+        # Try AI-based parsing first
+        try:
+            logger.debug(f"Attempting AI intent parsing for: '{context_text}'")
+            import asyncio
+            ai_result = asyncio.run(self._parse_intent_with_ai(context_text))
+            if ai_result:
+                logger.info(f"AI intent parsing successful: {ai_result.actions[0].intent} (confidence: {ai_result.overall_confidence})")
+                return ai_result
+            else:
+                logger.debug("AI intent parsing returned None, falling back to rule-based")
+        except Exception as e:
+            logger.debug(f"AI intent parsing failed with exception: {e}")
+            logger.debug(f"Exception type: {type(e)}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
         
-        # Score each intent based on keyword matches
-        for intent, keywords in self.intent_keywords.items():
-            score = 0
-            matched_keywords = []
-            
-            for keyword in keywords:
-                if keyword in context_lower:
-                    # Give higher score for exact matches
-                    if keyword == context_lower.strip():
-                        score += 10
-                    else:
-                        score += 1
-                    matched_keywords.append(keyword)
-            
-            if score > 0:
-                intent_scores[intent] = {
-                    "score": score,
-                    "keywords": matched_keywords
-                }
-        
-        # Determine primary intent
-        if not intent_scores:
-            # Default intent if no keywords match
-            primary_intent = "explore"
-            confidence = 0.3
-            reasoning = "No specific keywords found, defaulting to exploration"
-        else:
-            # Get highest scoring intent
-            primary_intent = max(intent_scores.keys(), key=lambda x: intent_scores[x]["score"])
-            max_score = intent_scores[primary_intent]["score"]
-            total_score = sum(data["score"] for data in intent_scores.values())
-            confidence = max_score / total_score if total_score > 0 else 0.5
-            
-            matched_keywords = intent_scores[primary_intent]["keywords"]
-            reasoning = f"Matched keywords: {', '.join(matched_keywords)}"
-        
-        # Get secondary intents (other high-scoring intents)
-        secondary_intents = [
-            intent for intent, data in intent_scores.items()
-            if intent != primary_intent and data["score"] >= 2
-        ]
-        
-        return ParsedIntent(
-            primary_intent=primary_intent,
-            secondary_intents=secondary_intents,
-            confidence=confidence,
-            reasoning=reasoning
-        )
+        # Fall back to rule-based parsing
+        logger.info("Using fallback rule-based intent parsing")
+        return self._parse_intent_fallback(context_text)
     
     def _detect_languages(self, context_text: str, repository_url: str) -> LanguageDetection:
         """
@@ -273,9 +394,9 @@ class ContextAnalyzer:
         context_lower = context_text.lower()
         
         # Intent-based scope determination
-        if parsed_intent.primary_intent in ["find_vulnerabilities", "security_audit"]:
+        if parsed_intent.actions[0].intent in ["find_vulnerabilities", "security_audit"]:
             return "security_focused"
-        elif parsed_intent.primary_intent == "analyze_performance":
+        elif parsed_intent.actions[0].intent == "analyze_performance":
             return "performance_focused"
         
         # Keyword-based scope determination
@@ -312,7 +433,7 @@ class ContextAnalyzer:
             return "comprehensive"
         
         # Default based on intent
-        if parsed_intent.primary_intent in ["find_vulnerabilities", "security_audit"]:
+        if parsed_intent.actions[0].intent in ["find_vulnerabilities", "security_audit"]:
             return "deep"
         
         return "comprehensive"

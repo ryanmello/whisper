@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { 
   WhisperAPI, 
   SmartAnalysisRequest, 
@@ -116,7 +115,6 @@ export default function SmartTaskExecution({
                   // Update current batch based on completed tools
                   if (executionPlan) {
                     const completedToolsArray = [...completedTools, data.tool_name];
-                    let toolsCompletedSoFar = 0;
                     let newCurrentBatch = 0;
                     
                     for (let i = 0; i < executionPlan.batches.length; i++) {
@@ -194,6 +192,7 @@ export default function SmartTaskExecution({
         wsRef.current.close();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repository, context, options]);
 
   const handleRetry = () => {
@@ -476,6 +475,79 @@ export default function SmartTaskExecution({
                         </div>
                       </div>
                     </div>
+
+                    {/* Individual Tool Results */}
+                    {results.tool_results && Object.keys(results.tool_results).length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-semibold mb-3">Detailed Tool Results</h3>
+                        <div className="space-y-4">
+                          {Object.entries(results.tool_results).map(([toolName, toolResult]: [string, any]) => (
+                            <Card key={toolName} className="border-l-4 border-l-blue-500">
+                              <CardHeader className="pb-3">
+                                <div className="flex items-center justify-between">
+                                  <CardTitle className="text-base flex items-center gap-2">
+                                    <span className="text-lg">
+                                      {toolName.includes('vulnerability') ? '🔍' : 
+                                       toolName.includes('explorer') ? '📁' : 
+                                       toolName.includes('performance') ? '⚡' : 
+                                       toolName.includes('security') ? '🔒' : '🔧'}
+                                    </span>
+                                    {toolName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                                  </CardTitle>
+                                  <Badge variant={toolResult.success ? "default" : "destructive"}>
+                                    {toolResult.success ? "✅ Success" : "❌ Failed"}
+                                  </Badge>
+                                </div>
+                                {toolResult.execution_time && (
+                                  <p className="text-sm text-muted-foreground">
+                                    Execution time: {toolResult.execution_time.toFixed(2)}s
+                                  </p>
+                                )}
+                              </CardHeader>
+                              <CardContent>
+                                {toolResult.success && toolResult.results ? (
+                                  <div className="space-y-3">
+                                    {/* Display tool results in a formatted way */}
+                                    {typeof toolResult.results === 'object' ? (
+                                      <div className="space-y-2">
+                                        {Object.entries(toolResult.results).map(([key, value]: [string, any]) => (
+                                          <div key={key} className="border-l-2 border-gray-200 pl-3">
+                                            <div className="text-sm font-medium text-gray-700 capitalize">
+                                              {key.replace(/_/g, ' ')}
+                                            </div>
+                                            <div className="text-sm text-gray-600 mt-1">
+                                              {typeof value === 'object' ? (
+                                                <pre className="bg-gray-50 p-2 rounded text-xs overflow-x-auto">
+                                                  {JSON.stringify(value, null, 2)}
+                                                </pre>
+                                              ) : (
+                                                <span>{String(value)}</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <div className="bg-gray-50 p-3 rounded-lg">
+                                        <pre className="text-sm text-gray-700 whitespace-pre-wrap">
+                                          {String(toolResult.results)}
+                                        </pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="bg-red-50 p-3 rounded-lg">
+                                    <p className="text-red-700 text-sm">
+                                      {toolResult.errors ? toolResult.errors.join(', ') : 'Tool execution failed'}
+                                    </p>
+                                  </div>
+                                )}
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
