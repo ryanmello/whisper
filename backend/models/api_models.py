@@ -11,6 +11,8 @@ class AnalysisRequest(BaseModel):
     repository_url: str = Field(..., description="GitHub repository URL")
     task_type: str = Field(default="explore-codebase", description="Type of analysis task")
     github_token: Optional[str] = Field(None, description="GitHub token for private repositories")
+    create_security_pr: bool = Field(default=False, description="Create GitHub PR for security fixes")
+    pr_options: Optional[Dict[str, Any]] = Field(None, description="Options for PR creation")
     
     @field_validator('repository_url')
     @classmethod
@@ -29,7 +31,7 @@ class AnalysisRequest(BaseModel):
         valid_types = [
             'explore-codebase', 'find-bugs', 'security-audit', 
             'performance-analysis', 'code-quality', 'documentation-review',
-            'dependency-analysis', 'architecture-review'
+            'dependency-analysis', 'architecture-review', 'dependency-audit'
         ]
         if v not in valid_types:
             raise ValueError(f'Task type must be one of: {", ".join(valid_types)}')
@@ -79,6 +81,7 @@ class AnalysisResponse(BaseModel):
     status: str = Field(..., description="Task status")
     message: str = Field(..., description="Status message")
     websocket_url: str = Field(..., description="WebSocket URL for real-time updates")
+    github_pr_enabled: bool = Field(default=False, description="Whether GitHub PR creation is enabled")
 
 class SmartAnalysisResponse(BaseModel):
     """Response model for smart analysis task creation."""
@@ -266,4 +269,46 @@ class AIAnalysis(BaseModel):
     complexity: str = Field(..., description="Analysis complexity: simple, moderate, complex")
     recommendation: str = Field(..., description="AI recommendation for analysis approach")
     estimatedTime: str = Field(..., description="Estimated time for analysis")
-    suggestedApproach: str = Field(..., description="Suggested analysis approach") 
+    suggestedApproach: str = Field(..., description="Suggested analysis approach")
+
+
+# GitHub PR Integration Models
+class GitHubPRResult(BaseModel):
+    """Result of GitHub pull request creation."""
+    success: bool = Field(..., description="Whether PR creation was successful")
+    pr_url: Optional[str] = Field(None, description="URL of the created pull request")
+    pr_number: Optional[int] = Field(None, description="Pull request number")
+    branch_name: Optional[str] = Field(None, description="Name of the created branch")
+    files_changed: List[str] = Field(default_factory=list, description="List of files modified")
+    vulnerabilities_fixed: int = Field(default=0, description="Number of vulnerabilities fixed")
+    error_message: Optional[str] = Field(None, description="Error message if creation failed")
+
+
+class GitHubServiceStatus(BaseModel):
+    """Status of GitHub service availability."""
+    available: bool = Field(..., description="Whether GitHub service is available")
+    authenticated: bool = Field(..., description="Whether GitHub authentication is valid")
+    rate_limit_remaining: Optional[int] = Field(None, description="API rate limit remaining")
+
+
+class EnhancedAnalysisResults(BaseModel):
+    """Enhanced analysis results with GitHub PR information."""
+    summary: str = Field(..., description="Analysis summary")
+    statistics: Dict[str, Any] = Field(..., description="Key statistics")
+    detailed_results: Dict[str, Any] = Field(..., description="Detailed analysis results")
+    github_pr: Optional[GitHubPRResult] = Field(None, description="GitHub PR creation result")
+
+
+class GitHubPRProgressMessage(BaseModel):
+    """WebSocket message for GitHub PR creation progress."""
+    type: str = Field(default="github_pr.progress", description="Message type")
+    task_id: str = Field(..., description="Task ID")
+    step: str = Field(..., description="Current PR creation step")
+    progress: float = Field(..., ge=0, le=100, description="Progress percentage")
+
+
+class GitHubPRCompletedMessage(BaseModel):
+    """WebSocket message for completed GitHub PR creation."""
+    type: str = Field(default="github_pr.completed", description="Message type")
+    task_id: str = Field(..., description="Task ID")
+    pr_result: GitHubPRResult = Field(..., description="PR creation result") 

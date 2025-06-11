@@ -38,8 +38,14 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
             })
             return
         
+        # Get PR options from task params
+        create_security_pr = task_params.get("create_security_pr", False)
+        pr_options = task_params.get("pr_options")
+        
         # Start the legacy analysis as a background task
-        asyncio.create_task(analysis_service.start_analysis(task_id, repository_url, task_type))
+        asyncio.create_task(
+            analysis_service.start_analysis(task_id, repository_url, task_type, create_security_pr, pr_options)
+        )
         
         # Keep the WebSocket connection alive to receive messages
         while True:

@@ -9,6 +9,7 @@ from pathlib import Path
 from collections import defaultdict, Counter
 import asyncio
 import re
+import logging
 
 from git import Repo, GitCommandError
 from langchain_openai import ChatOpenAI
@@ -16,6 +17,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
+
+logger = logging.getLogger(__name__)
 
 # Analysis State for LangGraph
 class WhisperAnalysisState(TypedDict):
@@ -304,6 +307,11 @@ class WhisperAnalysisAgent:
             "frameworks": sorted(frameworks, key=lambda x: x['confidence'], reverse=True),
             "total_code_files": sum(languages.values())
         }
+
+    def detect_primary_language(self, root_path: str) -> str:
+        """Detect the primary programming language of the repository."""
+        languages = self.detect_languages_and_frameworks(root_path)
+        return languages.get("primary_language", "Unknown")
 
     def analyze_dependencies(self, root_path: str) -> Dict[str, List[str]]:
         """Analyze project dependencies from various manifest files."""
@@ -719,6 +727,490 @@ class WhisperAnalysisAgent:
             }
         }
 
+    async def create_security_pr(
+        self, 
+        repository_url: str, 
+        vulnerability_results: Dict[str, Any],
+        pr_options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a GitHub pull request to fix security vulnerabilities.
+        
+        Args:
+            repository_url: GitHub repository URL
+            vulnerability_results: Results from vulnerability scanning
+            pr_options: Options for PR creation (reviewers, labels, etc.)
+            
+        Returns:
+            Dictionary with PR creation results
+        """
+        try:
+            from services.github_service import github_service
+            from services.dependency_updater import DependencyUpdater
+            from utils.go_mod_parser import GoModParser
+        except ImportError as e:
+            logger.error(f"GitHub integration dependencies not available: {e}")
+            return {
+                "success": False,
+                "error": f"GitHub integration not available: {str(e)}"
+            }
+        
+        try:
+            # Check if GitHub service is available
+            if not github_service.is_available():
+                return {
+                    "success": False,
+                    "error": "GitHub service not available - check authentication"
+                }
+            
+            # Clone repository for analysis
+            clone_result = self._clone_repository_direct(repository_url)
+            if clone_result["status"] != "success":
+                return {
+                    "success": False,
+                    "error": f"Failed to clone repository: {clone_result.get('error', 'Unknown error')}"
+                }
+            
+            clone_path = clone_result["clone_path"]
+            logger.info(f"Successfully cloned repository to: {clone_path}")
+            
+            # Debug: Check what files exist in the cloned repository
+            if os.path.exists(clone_path):
+                try:
+                    files = os.listdir(clone_path)
+                    logger.info(f"Repository contains {len(files)} items: {files[:10]}...")  # Show first 10 items
+                    go_mod_exists = os.path.exists(os.path.join(clone_path, "go.mod"))
+                    logger.info(f"go.mod exists: {go_mod_exists}")
+                except Exception as e:
+                    logger.warning(f"Could not list repository contents: {e}")
+            else:
+                logger.error(f"Clone path does not exist: {clone_path}")
+            
+            try:
+                # Find and parse go.mod files
+                parser = GoModParser()
+                go_mod_files = parser.find_go_mod_files(clone_path)
+                
+                if not go_mod_files:
+                    return {
+                        "success": False,
+                        "error": "No go.mod files found in repository"
+                    }
+                
+                # Process vulnerabilities and generate updates
+                dependency_updater = DependencyUpdater()
+                all_updates = []
+                last_go_mod_file = None
+                
+                logger.info(f"Processing vulnerability results: {vulnerability_results.get('scan_summary', {})}")
+                
+                for go_mod_path in go_mod_files:
+                    try:
+                        go_mod_file = parser.parse_go_mod(go_mod_path)
+                        last_go_mod_file = go_mod_file  # Keep track of the last parsed file
+                        updates = dependency_updater.analyze_vulnerabilities(
+                            vulnerability_results, go_mod_file
+                        )
+                        logger.info(f"Generated {len(updates)} updates from {go_mod_path}")
+                        for update in updates:
+                            logger.info(f"  - {update.module_path}: {update.current_version} -> {update.updated_version} (severity: {update.severity})")
+                        all_updates.extend(updates)
+                    except Exception as e:
+                        logger.warning(f"Failed to process {go_mod_path}: {e}")
+                        continue
+                
+                logger.info(f"Total dependency updates generated: {len(all_updates)}")
+                
+                if not all_updates:
+                    logger.warning("No dependency updates generated from vulnerabilities")
+                    return {
+                        "success": True,
+                        "message": "No vulnerability fixes needed",
+                        "vulnerabilities_fixed": 0
+                    }
+                
+                # Validate updates (use the last parsed go.mod file or first one if available)
+                validation_go_mod = last_go_mod_file or parser.parse_go_mod(go_mod_files[0])
+                valid_updates, validation_errors = dependency_updater.validate_updates(
+                    all_updates, validation_go_mod
+                )
+                
+                logger.info(f"Validation complete: {len(valid_updates)} valid updates, {len(validation_errors)} errors")
+                
+                if validation_errors:
+                    logger.warning(f"Validation errors: {validation_errors}")
+                
+                if not valid_updates:
+                    logger.error("No valid updates found after validation")
+                    return {
+                        "success": False,
+                        "error": f"No valid updates found. Validation errors: {validation_errors}"
+                    }
+                
+                logger.info("Creating GitHub PR with valid dependency updates")
+                
+                # Create GitHub PR
+                pr_result = github_service.create_security_pr(
+                    repository_url,
+                    valid_updates,
+                    vulnerability_results,
+                    **(pr_options or {})
+                )
+                
+                logger.info(f"PR creation result: success={pr_result.success}, url={pr_result.pr_url}, error={pr_result.error_message}")
+                
+                return {
+                    "success": pr_result.success,
+                    "pr_url": pr_result.pr_url,
+                    "pr_number": pr_result.pr_number,
+                    "branch_name": pr_result.branch_name,
+                    "files_changed": pr_result.files_changed,
+                    "vulnerabilities_fixed": pr_result.vulnerabilities_fixed,
+                    "error": pr_result.error_message
+                }
+                
+            except Exception as e:
+                logger.error(f"Error creating security PR: {e}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+        except Exception as e:
+            logger.error(f"Error creating security PR: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        finally:
+            # Cleanup
+            if hasattr(self, 'temp_dir') and self.temp_dir and os.path.exists(self.temp_dir):
+                self._cleanup_directory(self.temp_dir)
+
+    async def _scan_vulnerabilities(self, clone_path: str, repository_url: str = "") -> Optional[Dict[str, Any]]:
+        """Scan for security vulnerabilities in the repository."""
+        logger.info(f"Starting vulnerability scan for path: {clone_path}")
+        
+        try:
+            from tools.security.go_vulnerability_tool import GoVulnerabilityTool
+            from tools.base_tool import AnalysisContext
+        except ImportError as e:
+            logger.warning(f"Vulnerability scanning not available: {e}")
+            return None
+        
+        # Check if this is a Go project
+        go_mod_path = os.path.join(clone_path, "go.mod")
+        logger.info(f"Checking for go.mod at: {go_mod_path}")
+        
+        if not os.path.exists(go_mod_path):
+            logger.info("No go.mod found, skipping vulnerability scan")
+            return None
+        
+        logger.info("go.mod found, proceeding with vulnerability scan")
+        
+        try:
+            # Create analysis context for vulnerability scanning
+            context = AnalysisContext(
+                repository_path=clone_path,
+                repository_url=repository_url,
+                target_languages=["go"],
+                intent="security_audit",
+                additional_params={}
+            )
+            
+            # Initialize and run vulnerability tool
+            vuln_tool = GoVulnerabilityTool()
+            logger.info("Initialized GoVulnerabilityTool")
+            
+            # Validate context
+            is_valid, errors = vuln_tool.validate_context(context)
+            if not is_valid:
+                logger.warning(f"Context validation failed: {errors}")
+                return None
+            
+            logger.info("Context validation passed, running vulnerability scan")
+            
+            # Run vulnerability scan
+            result = await vuln_tool.execute(context)
+            
+            if result.success:
+                logger.info(f"Vulnerability scan successful: {result.results.get('scan_summary', {})}")
+                return result.results
+            else:
+                logger.warning(f"Vulnerability scan failed: {result.errors}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Vulnerability scanning failed: {e}")
+            return None
+
+    async def analyze_repository_dependency_audit(
+        self, 
+        repository_url: str,
+        create_pr: bool = True,
+        pr_options: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Specialized dependency audit workflow that scans for vulnerabilities and creates PRs.
+        
+        Args:
+            repository_url: GitHub repository URL
+            create_pr: Whether to create PR automatically for fixes
+            pr_options: Options for PR creation
+            
+        Yields:
+            Progress updates and results including PR information
+        """
+        logger.info(f"Starting dependency audit for repository: {repository_url}")
+        
+        # Clone repository
+        yield {
+            "type": "progress",
+            "current_step": "Cloning repository for dependency audit...",
+            "progress": 10.0
+        }
+        
+        clone_result = self._clone_repository_direct(repository_url)
+        if clone_result["status"] != "success":
+            yield {
+                "type": "error", 
+                "error": f"Failed to clone repository: {clone_result.get('error', 'Unknown error')}"
+            }
+            return
+
+        clone_path = clone_result["clone_path"]
+        logger.info(f"Successfully cloned repository to: {clone_path}")
+        
+        # Debug: Check what files exist in the cloned repository
+        if os.path.exists(clone_path):
+            try:
+                files = os.listdir(clone_path)
+                logger.info(f"Repository contains {len(files)} items: {files[:10]}...")  # Show first 10 items
+                go_mod_exists = os.path.exists(os.path.join(clone_path, "go.mod"))
+                logger.info(f"go.mod exists: {go_mod_exists}")
+            except Exception as e:
+                logger.warning(f"Could not list repository contents: {e}")
+        else:
+            logger.error(f"Clone path does not exist: {clone_path}")
+        
+        try:
+            # Basic repository analysis
+            yield {
+                "type": "progress",
+                "current_step": "Analyzing repository structure...",
+                "progress": 20.0
+            }
+            
+            dependencies = self.analyze_dependencies(clone_path)
+            primary_language = self.detect_primary_language(clone_path)
+            
+            # Vulnerability scanning
+            yield {
+                "type": "progress",
+                "current_step": "Scanning for security vulnerabilities...",
+                "progress": 50.0
+            }
+            
+            vulnerability_results = await self._scan_vulnerabilities(clone_path, repository_url)
+            
+            if not vulnerability_results:
+                yield {
+                    "type": "completed",
+                    "results": {
+                        "repository_url": repository_url,
+                        "primary_language": primary_language,
+                        "dependencies": dependencies,
+                        "vulnerability_scan": {
+                            "status": "skipped",
+                            "reason": "No Go project detected or scanner unavailable"
+                        },
+                        "summary": "Dependency audit completed - no vulnerabilities to scan"
+                    }
+                }
+                return
+            
+            vulnerabilities_found = vulnerability_results.get("scan_summary", {}).get("vulnerabilities_found", 0)
+            
+            if vulnerabilities_found == 0:
+                yield {
+                    "type": "completed",
+                    "results": {
+                        "repository_url": repository_url,
+                        "primary_language": primary_language,
+                        "dependencies": dependencies,
+                        "vulnerability_scan": vulnerability_results,
+                        "github_pr": {
+                            "success": True,
+                            "action": "none_needed",
+                            "message": "No vulnerabilities found - no PR needed",
+                            "vulnerabilities_fixed": 0
+                        },
+                        "summary": "Dependency audit completed - no vulnerabilities found"
+                    }
+                }
+                return
+            
+            # Vulnerabilities found - create PR if enabled
+            if create_pr:
+                yield {
+                    "type": "progress",
+                    "current_step": f"Found {vulnerabilities_found} vulnerabilities - creating fix PR...",
+                    "progress": 80.0
+                }
+                
+                try:
+                    pr_result = await self.create_security_pr(
+                        repository_url,
+                        vulnerability_results,
+                        pr_options
+                    )
+                    
+                    yield {
+                        "type": "completed",
+                        "results": {
+                            "repository_url": repository_url,
+                            "primary_language": primary_language,
+                            "dependencies": dependencies,
+                            "vulnerability_scan": vulnerability_results,
+                            "github_pr": pr_result,
+                            "summary": f"Dependency audit completed - {vulnerabilities_found} vulnerabilities found and PR created"
+                        }
+                    }
+                    
+                except Exception as e:
+                    yield {
+                        "type": "error",
+                        "error": f"Failed to create security PR: {str(e)}",
+                        "results": {
+                            "repository_url": repository_url,
+                            "primary_language": primary_language,
+                            "dependencies": dependencies,
+                            "vulnerability_scan": vulnerability_results,
+                            "summary": f"Dependency audit completed - {vulnerabilities_found} vulnerabilities found but PR creation failed"
+                        }
+                    }
+            else:
+                yield {
+                    "type": "completed",
+                    "results": {
+                        "repository_url": repository_url,
+                        "primary_language": primary_language,
+                        "dependencies": dependencies,
+                        "vulnerability_scan": vulnerability_results,
+                        "summary": f"Dependency audit completed - {vulnerabilities_found} vulnerabilities found (PR creation disabled)"
+                    }
+                }
+                
+        except Exception as e:
+            logger.error(f"Dependency audit failed: {e}")
+            yield {
+                "type": "error",
+                "error": f"Dependency audit failed: {str(e)}"
+            }
+        finally:
+            # Cleanup
+            if hasattr(self, 'temp_dir') and self.temp_dir and os.path.exists(self.temp_dir):
+                self._cleanup_directory(self.temp_dir)
+
+    async def analyze_repository_with_pr(
+        self, 
+        repository_url: str,
+        create_security_pr: bool = False,
+        pr_options: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Enhanced repository analysis with optional GitHub PR creation.
+        
+        Args:
+            repository_url: GitHub repository URL
+            create_security_pr: Whether to create PR for security fixes
+            pr_options: Options for PR creation
+            
+        Yields:
+            Progress updates and results including PR information
+        """
+        # Run normal analysis first
+        analysis_results = None
+        async for update in self.analyze_repository(repository_url):
+            yield update
+            
+            if update["type"] == "completed":
+                analysis_results = update["results"]
+        
+        # If security PR creation is enabled and analysis is complete
+        if create_security_pr and analysis_results:
+            # Clone repository again for vulnerability scanning (if not already available)
+            clone_result = self._clone_repository_direct(repository_url)
+            if clone_result["status"] != "success":
+                yield {
+                    "type": "github_pr_error",
+                    "error": f"Failed to clone repository for vulnerability scan: {clone_result.get('error', 'Unknown error')}"
+                }
+                return
+            
+            clone_path = clone_result["clone_path"]
+            
+            try:
+                # Perform actual vulnerability scanning
+                yield {
+                    "type": "progress",
+                    "current_step": "Scanning for security vulnerabilities...",
+                    "progress": 90.0
+                }
+                
+                vulnerability_results = await self._scan_vulnerabilities(clone_path, repository_url)
+                
+                if vulnerability_results and vulnerability_results.get("scan_summary", {}).get("vulnerabilities_found", 0) > 0:
+                    yield {
+                        "type": "progress",
+                        "current_step": "Creating security pull request...",
+                        "progress": 95.0
+                    }
+                    
+                    pr_result = await self.create_security_pr(
+                        repository_url,
+                        vulnerability_results,
+                        pr_options
+                    )
+                else:
+                    yield {
+                        "type": "github_pr_completed",
+                        "pr_result": {
+                            "success": True,
+                            "message": "No vulnerabilities found that require fixes",
+                            "vulnerabilities_fixed": 0
+                        }
+                    }
+                    return
+                    
+            except Exception as e:
+                yield {
+                    "type": "github_pr_error",
+                    "error": str(e)
+                }
+                return
+            finally:
+                # Cleanup cloned repository
+                if hasattr(self, 'temp_dir') and self.temp_dir and os.path.exists(self.temp_dir):
+                    self._cleanup_directory(self.temp_dir)
+            
+            try:
+                
+                yield {
+                    "type": "github_pr_completed",
+                    "pr_result": pr_result
+                }
+                
+            except Exception as e:
+                yield {
+                    "type": "github_pr_error",
+                    "error": str(e)
+                }
+        
+        yield {
+            "type": "analysis_completed",
+            "results": analysis_results
+        }
+
 # Usage Example
 async def main():
     """Example usage of the Whisper Analysis Agent."""
@@ -735,6 +1227,7 @@ async def main():
         elif update["type"] == "completed":
             print("\nAnalysis Complete!")
             print(f"Insights: {update['results']['architectural_insights'][:200]}...")
+
 
 if __name__ == "__main__":
     asyncio.run(main()) 

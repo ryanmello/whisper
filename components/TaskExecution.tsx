@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { WhisperAPI, AnalysisProgress, extractRepoName } from "@/lib/api";
+import { GitHubPRDialog } from "./GitHubPRDialog";
 
 interface TaskExecutionProps {
   repository: string;
@@ -43,6 +44,7 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
   const [isConnecting, setIsConnecting] = useState(true);
   const [results, setResults] = useState<AnalysisProgress['results'] | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [showPRDialog, setShowPRDialog] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
   const taskInfo = taskConfig[task] || taskConfig["explore-codebase"];
@@ -139,7 +141,7 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
         wsRef.current.close();
       }
     };
-  }, [repository, task, isCompleted]);
+  }, [repository, task]);
 
   const handleRetry = () => {
     setError(null);
@@ -351,6 +353,110 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
               </Card>
             )}
 
+            {/* Dependency Audit Results */}
+            {(results?.detailed_results as any)?.dependency_audit && (() => {
+              const auditResults = (results!.detailed_results as any).dependency_audit;
+              return (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>🔍 Dependency Audit Results</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {/* Vulnerability Summary */}
+                      {auditResults.vulnerability_scan?.scan_summary && (
+                        <div className="bg-red-50 p-4 rounded-lg">
+                          <h3 className="font-semibold mb-2">Security Scan Summary</h3>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="text-center">
+                              <div className="text-2xl font-bold text-red-600">
+                                {auditResults.vulnerability_scan.scan_summary.vulnerabilities_found}
+                              </div>
+                              <div className="text-xs text-gray-600">Total Vulnerabilities</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-lg font-bold text-gray-800">
+                                {auditResults.vulnerability_scan.scan_summary.risk_level}
+                              </div>
+                              <div className="text-xs text-gray-600">Risk Level</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-lg font-bold text-blue-600">
+                                {auditResults.vulnerability_scan.scan_summary.total_modules}
+                              </div>
+                              <div className="text-xs text-gray-600">Modules Scanned</div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-lg font-bold text-gray-600">
+                                {auditResults.primary_language}
+                              </div>
+                              <div className="text-xs text-gray-600">Language</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* GitHub PR Status */}
+                      {auditResults.github_pr && (
+                        <div className={`p-4 rounded-lg ${
+                          auditResults.github_pr.success 
+                            ? (auditResults.github_pr.action === 'none_needed' 
+                                ? 'bg-green-50 border border-green-200' 
+                                : 'bg-green-50 border border-green-200')
+                            : 'bg-red-50 border border-red-200'
+                        }`}>
+                          <h3 className="font-semibold mb-2">
+                            {auditResults.github_pr.success 
+                              ? (auditResults.github_pr.action === 'none_needed' 
+                                  ? '✅ No Action Required' 
+                                  : '✅ PR Created Successfully')
+                              : '❌ PR Creation Failed'}
+                          </h3>
+                          {auditResults.github_pr.success ? (
+                            <div className="space-y-2">
+                              {auditResults.github_pr.action === 'none_needed' ? (
+                                <div className="text-green-700">
+                                  {auditResults.github_pr.message || 'No vulnerabilities found - repository is secure'}
+                                </div>
+                              ) : (
+                                <>
+                                  {auditResults.github_pr.pr_url && (
+                                    <div>
+                                      <strong>PR URL:</strong>{' '}
+                                      <a 
+                                        href={auditResults.github_pr.pr_url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="text-blue-600 hover:underline"
+                                      >
+                                        {auditResults.github_pr.pr_url}
+                                      </a>
+                                    </div>
+                                  )}
+                                  <div>
+                                    <strong>Vulnerabilities Fixed:</strong> {auditResults.github_pr.vulnerabilities_fixed || 0}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-red-700">
+                              {auditResults.github_pr.error || 'Unknown error occurred'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Summary */}
+                      <div className="bg-blue-50 p-4 rounded-lg">
+                        <p className="text-gray-700">{auditResults.summary}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()}
+
             {/* Dependencies */}
             {results?.detailed_results?.whisper_analysis?.dependencies && 
              Object.keys(results.detailed_results.whisper_analysis.dependencies).length > 0 && (
@@ -383,29 +489,38 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
             )}
 
             {/* Action Buttons */}
-            <div className="flex gap-4 justify-center">
-              <Button variant="outline" onClick={onBack}>
-                Run Another Task
-              </Button>
-              <Button 
-                className="bg-blue-600 hover:bg-blue-700"
-                onClick={() => {
-                  // Export functionality can be added here
-                  const dataStr = JSON.stringify(results, null, 2);
-                  const dataBlob = new Blob([dataStr], {type: 'application/json'});
-                  const url = URL.createObjectURL(dataBlob);
-                  const link = document.createElement('a');
-                  link.href = url;
-                  link.download = `${repoName.replace('/', '-')}-analysis.json`;
-                  link.click();
+            {isCompleted && (
+              <div className="flex flex-col sm:flex-row gap-2 mt-6">
+                <Button onClick={onBack} variant="outline" size="sm">
+                  ← Back to Analysis
+                </Button>
+                
+                {/* GitHub PR Creation Button for Security Issues */}
+                {results?.detailed_results?.whisper_analysis?.dependencies && (
+                  <Button 
+                    onClick={() => setShowPRDialog(true)}
+                    className="bg-green-600 hover:bg-green-700 text-white"
+                    size="sm"
+                  >
+                    🔧 Create Security Fix PR
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* GitHub PR Creation Dialog */}
+            {showPRDialog && (
+              <GitHubPRDialog
+                repository={repository}
+                vulnerabilityResults={results?.detailed_results}
+                onClose={() => setShowPRDialog(false)}
+                onSuccess={(prUrl: string) => {
+                  setShowPRDialog(false);
+                  // Show success message
+                  console.log('PR created:', prUrl);
                 }}
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Export Report
-              </Button>
-            </div>
+              />
+            )}
           </div>
         )}
       </div>

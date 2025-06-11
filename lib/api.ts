@@ -347,6 +347,48 @@ export class WhisperAPI {
       return false;
     }
   }
+
+  /**
+   * Create a security fix PR for dependency vulnerabilities
+   */
+  static async createSecurityPR(request: {
+    repository: string;
+    owner: string;
+    repo: string;
+    title: string;
+    description?: string;
+    target_branch: string;
+    dry_run: boolean;
+    vulnerability_data?: any;
+  }): Promise<{
+    success: boolean;
+    pr_url?: string;
+    preview_url?: string;
+    error?: string;
+  }> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/github/create-pr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error creating security PR:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
 }
 
 /**

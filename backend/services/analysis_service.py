@@ -25,6 +25,7 @@ class AnalysisService:
         
         self.active_connections: Dict[str, WebSocket] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        self.task_metadata: Dict[str, Dict[str, Any]] = {}  # Store task configuration
         self._initialized = False
         
     async def initialize(self):
@@ -38,10 +39,25 @@ class AnalysisService:
         self._initialized = True
         logger.info("Analysis service initialized successfully")
         
-    async def create_task(self, repository_url: str, task_type: str = "explore-codebase") -> str:
+    async def create_task(
+        self, 
+        repository_url: str, 
+        task_type: str = "explore-codebase", 
+        create_security_pr: bool = False,
+        pr_options: Optional[Dict] = None
+    ) -> str:
         """Create a new analysis task and return task ID."""
         task_id = str(uuid.uuid4())
-        logger.info(f"Created analysis task {task_id} for repository: {repository_url}")
+        
+        # Store task metadata (not overwriting active_tasks which stores asyncio.Task objects)
+        self.task_metadata[task_id] = {
+            "repository_url": repository_url,
+            "task_type": task_type,
+            "create_security_pr": create_security_pr,
+            "pr_options": pr_options or {}
+        }
+        
+        logger.info(f"Created analysis task {task_id} for repository: {repository_url} (PR: {create_security_pr})")
         return task_id
     
     async def create_smart_task(
@@ -73,8 +89,14 @@ class AnalysisService:
         
         # Cancel any running task
         if task_id in self.active_tasks:
-            self.active_tasks[task_id].cancel()
+            task = self.active_tasks[task_id]
+            if isinstance(task, asyncio.Task):
+                task.cancel()
             del self.active_tasks[task_id]
+        
+        # Clean up task metadata
+        if task_id in self.task_metadata:
+            del self.task_metadata[task_id]
         
         logger.info(f"WebSocket disconnected for task {task_id}")
     
@@ -87,11 +109,20 @@ class AnalysisService:
                 logger.error(f"Failed to send message to {task_id}: {e}")
                 await self.disconnect_websocket(task_id)
     
-    async def start_analysis(self, task_id: str, repository_url: str, task_type: str = "explore-codebase"):
+    async def start_analysis(
+        self, 
+        task_id: str, 
+        repository_url: str, 
+        task_type: str = "explore-codebase",
+        create_security_pr: bool = False,
+        pr_options: Optional[Dict] = None
+    ):
         """Start repository analysis with real-time updates (legacy method)."""
         
         # Create and track the analysis task
-        analysis_task = asyncio.create_task(self._run_legacy_analysis(task_id, repository_url, task_type))
+        analysis_task = asyncio.create_task(
+            self._run_legacy_analysis(task_id, repository_url, task_type, create_security_pr, pr_options)
+        )
         self.active_tasks[task_id] = analysis_task
         
         try:
@@ -141,7 +172,14 @@ class AnalysisService:
             if task_id in self.active_tasks:
                 del self.active_tasks[task_id]
     
-    async def _run_legacy_analysis(self, task_id: str, repository_url: str, task_type: str):
+    async def _run_legacy_analysis(
+        self, 
+        task_id: str, 
+        repository_url: str, 
+        task_type: str,
+        create_security_pr: bool = False,
+        pr_options: Optional[Dict] = None
+    ):
         """Internal method to run the legacy analysis using WhisperAnalysisAgent."""
         try:
             # Send initial confirmation
@@ -153,9 +191,29 @@ class AnalysisService:
                 "task_type": task_type
             })
             
-            # Run the analysis with real-time updates
+            # Run the analysis with real-time updates based on task type
             last_progress = 0
-            async for update in self.whisper_agent.analyze_repository(repository_url):
+            
+            # Choose analysis method based on task type
+            if task_type == "dependency-audit":
+                # Use specialized dependency audit workflow that automatically creates PRs
+                analysis_method = self.whisper_agent.analyze_repository_dependency_audit(
+                    repository_url,
+                    create_pr=True,  # Always create PR for dependency audits
+                    pr_options=pr_options
+                )
+            elif create_security_pr:
+                # Use PR-enabled analysis for other tasks
+                analysis_method = self.whisper_agent.analyze_repository_with_pr(
+                    repository_url, 
+                    create_security_pr, 
+                    pr_options
+                )
+            else:
+                # Standard analysis workflow
+                analysis_method = self.whisper_agent.analyze_repository(repository_url)
+            
+            async for update in analysis_method:
                 if update["type"] == "progress":
                     current_progress = update["progress"]
                     current_step = update["current_step"]
@@ -187,8 +245,24 @@ class AnalysisService:
                     
                     last_progress = current_progress
                 
-                elif update["type"] == "completed":
-                    # Send final results
+                elif update["type"] == "github_pr_completed":
+                    # Send GitHub PR completion message
+                    await self.send_message(task_id, {
+                        "type": "github_pr.completed",
+                        "task_id": task_id,
+                        "pr_result": update["pr_result"]
+                    })
+                
+                elif update["type"] == "github_pr_error":
+                    # Send GitHub PR error message
+                    await self.send_message(task_id, {
+                        "type": "github_pr.error",
+                        "task_id": task_id,
+                        "error": update["error"]
+                    })
+                
+                elif update["type"] == "analysis_completed":
+                    # Send final analysis results (when using PR workflow)
                     await self.send_message(task_id, {
                         "type": "task.completed",
                         "task_id": task_id,
@@ -205,6 +279,49 @@ class AnalysisService:
                                     "dependencies": update["results"]["dependencies"]
                                 }
                             }
+                        }
+                    })
+                    break
+                
+                elif update["type"] == "completed":
+                    # Send final results (traditional workflow or dependency audit)
+                    results = update["results"]
+                    
+                    # Handle dependency audit results differently
+                    if task_type == "dependency-audit":
+                        detailed_results = {
+                            "dependency_audit": {
+                                "summary": results.get("summary", "Audit completed"),
+                                "vulnerability_scan": results.get("vulnerability_scan", {}),
+                                "github_pr": results.get("github_pr", {}),
+                                "dependencies": results.get("dependencies", {}),
+                                "primary_language": results.get("primary_language", "Unknown")
+                            }
+                        }
+                        
+                        # Also include vulnerability scan results in the main results for the frontend
+                        if results.get("vulnerability_scan"):
+                            detailed_results["vulnerability_scanner"] = results["vulnerability_scan"]
+                    else:
+                        # Traditional analysis results
+                        detailed_results = {
+                            "whisper_analysis": {
+                                "analysis": results.get("architectural_insights", ""),
+                                "file_structure": results.get("file_structure", {}),
+                                "language_analysis": results.get("language_analysis", {}),
+                                "architecture_patterns": results.get("architecture_patterns", []),
+                                "main_components": results.get("main_components", []),
+                                "dependencies": results.get("dependencies", {})
+                            }
+                        }
+                    
+                    await self.send_message(task_id, {
+                        "type": "task.completed",
+                        "task_id": task_id,
+                        "results": {
+                            "summary": self._generate_summary(results),
+                            "statistics": self._generate_statistics(results),
+                            "detailed_results": detailed_results
                         }
                     })
                     break

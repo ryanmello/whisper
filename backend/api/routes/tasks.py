@@ -3,17 +3,23 @@ Task management endpoints.
 """
 
 import os
-from fastapi import APIRouter, HTTPException
+import asyncio
+import logging
+from typing import Dict, Any, Optional
+from fastapi import APIRouter, HTTPException, Depends
 
 from models.api_models import (
     AnalysisRequest, AnalysisResponse, SmartAnalysisRequest, SmartAnalysisResponse,
-    TaskStatus, ActiveConnectionsInfo, ToolRegistryInfo, IntentAnalysisRequest, AIAnalysis
+    TaskStatus, ActiveConnectionsInfo, ToolRegistryInfo, IntentAnalysisRequest, AIAnalysis,
+    GitHubServiceStatus
 )
 from core.app import get_analysis_service
 from services.openai_service import OpenAIService
 from config.settings import settings
 from core.context_analyzer import ContextAnalyzer
+from core.tool_registry import get_tool_registry
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/analyze-intent", response_model=AIAnalysis)
@@ -100,7 +106,9 @@ async def create_analysis_task(request: AnalysisRequest):
     
     task_id = await analysis_service.create_task(
         repository_url=request.repository_url,
-        task_type=request.task_type
+        task_type=request.task_type,
+        create_security_pr=request.create_security_pr,
+        pr_options=request.pr_options
     )
     
     # Construct WebSocket URL
@@ -110,7 +118,8 @@ async def create_analysis_task(request: AnalysisRequest):
         task_id=task_id,
         status="created",
         message=f"Analysis task created for {request.repository_url}",
-        websocket_url=websocket_url
+        websocket_url=websocket_url,
+        github_pr_enabled=request.create_security_pr
     )
 
 @router.post("/smart-tasks/", response_model=SmartAnalysisResponse)
@@ -172,4 +181,43 @@ async def get_tool_registry_info():
         registry_info = await analysis_service.get_tool_registry_info()
         return ToolRegistryInfo(**registry_info)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get tool registry info: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to get tool registry info: {str(e)}")
+
+@router.get("/github/status", response_model=GitHubServiceStatus)
+async def get_github_service_status():
+    """Get GitHub service status and authentication information."""
+    try:
+        from services.github_service import github_service
+        
+        # Check if service is available and authenticated
+        is_available = github_service.is_available()
+        
+        # Get rate limit info if authenticated
+        rate_limit_remaining = None
+        if is_available and github_service.github_client:
+            try:
+                rate_limit = github_service.github_client.get_rate_limit()
+                rate_limit_remaining = rate_limit.core.remaining
+            except Exception:
+                pass  # Ignore rate limit errors
+        
+        return GitHubServiceStatus(
+            available=is_available,
+            authenticated=is_available,
+            rate_limit_remaining=rate_limit_remaining
+        )
+        
+    except ImportError as e:
+        logger.warning(f"GitHub service not available due to import error: {e}")
+        return GitHubServiceStatus(
+            available=False,
+            authenticated=False,
+            rate_limit_remaining=None
+        )
+    except Exception as e:
+        logger.error(f"Error checking GitHub service status: {e}")
+        return GitHubServiceStatus(
+            available=False,
+            authenticated=False,
+            rate_limit_remaining=None
+        ) 
