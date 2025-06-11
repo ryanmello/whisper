@@ -208,12 +208,7 @@ backend/
 - **`WhisperAnalysisAgent`**: Performs AI-powered repository analysis
 - **`AnalysisRequest/Response`**: Type-safe API models
 
-### Adding New Analysis Types
 
-1. Update `task_type` validation in `models/api_models.py`
-2. Extend the Whisper Analysis Agent or create new agents
-3. Update the analysis service to handle new task types
-4. Add corresponding frontend support
 
 ### Testing
 
@@ -244,13 +239,7 @@ pytest --cov=.
 ### Supported Analysis Types
 
 - `explore-codebase`: Comprehensive repository analysis
-- `find-bugs`: Bug detection and code issues
-- `security-audit`: Security vulnerability analysis
-- `performance-analysis`: Performance bottleneck identification
-- `code-quality`: Code quality evaluation
-- `documentation-review`: Documentation analysis
-- `dependency-analysis`: Dependency analysis
-- `architecture-review`: Architecture assessment
+- `dependency-audit`: Security vulnerability analysis with automatic PR creation
 
 ## 🚨 Troubleshooting
 

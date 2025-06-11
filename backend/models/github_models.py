@@ -86,17 +86,15 @@ class GitHubServiceStatus(BaseModel):
 class EnhancedAnalysisRequest(BaseModel):
     """Enhanced analysis request with GitHub PR creation options."""
     repository_url: str = Field(..., description="GitHub repository URL")
-    task_type: str = Field(default="security-audit", description="Type of analysis to perform")
-    create_security_pr: bool = Field(default=False, description="Create PR for security fixes")
+    task_type: str = Field(default="dependency-audit", description="Type of analysis to perform")
     github_token: Optional[str] = Field(None, description="GitHub token (if not in environment)")
-    pr_options: Optional[GitHubPROptions] = Field(None, description="PR creation options")
+    pr_options: Optional[GitHubPROptions] = Field(None, description="PR creation options (only used with dependency-audit task type)")
     
     class Config:
         schema_extra = {
             "example": {
                 "repository_url": "https://github.com/example/go-project",
-                "task_type": "security-audit",
-                "create_security_pr": True,
+                "task_type": "dependency-audit",
                 "pr_options": {
                     "target_branch": "main",
                     "reviewers": ["@security-team"],

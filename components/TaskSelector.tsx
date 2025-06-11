@@ -5,15 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { WhisperAPI, generateContextSuggestions, ToolRegistryInfo } from "@/lib/api";
+import { WhisperAPI, generateContextSuggestions, ToolRegistryInfo, TaskType } from "@/lib/api";
 import { Zap, Brain, Clock, Target, Settings2, Lightbulb } from "lucide-react";
 
 interface TaskSelectorProps {
   repository: string;
-  onTaskSelect: (task: string) => void;
+  onTaskSelect: (task: TaskType | null) => void;
   onStartTask: () => void;
   onStartSmartTask: (context: string, options?: any) => void;
-  selectedTask: string | null;
+  selectedTask: TaskType | null;
 }
 
 interface SmartAnalysisOptions {
@@ -69,7 +69,7 @@ async function analyzeIntentWithAI(context: string, repoUrl: string): Promise<AI
   }
 }
 
-// Mock tasks data
+// All task types - including future ones for inspiration and planning
 const suggestedTasks = [
   {
     id: "explore-codebase",
@@ -79,6 +79,17 @@ const suggestedTasks = [
     difficulty: "Easy",
     estimatedTime: "5-10 min",
     category: "Analysis",
+    isAvailable: true,
+  },
+  {
+    id: "dependency-audit",
+    title: "Dependency Audit",
+    description: "Review project dependencies for security vulnerabilities and automatically create PR with fixes",
+    icon: "📦",
+    difficulty: "Medium",
+    estimatedTime: "8-12 min",
+    category: "Security",
+    isAvailable: true,
   },
   {
     id: "find-bugs",
@@ -88,6 +99,7 @@ const suggestedTasks = [
     difficulty: "Medium",
     estimatedTime: "10-15 min",
     category: "Quality",
+    isAvailable: false,
   },
   {
     id: "security-audit",
@@ -97,6 +109,7 @@ const suggestedTasks = [
     difficulty: "Hard",
     estimatedTime: "15-20 min",
     category: "Security",
+    isAvailable: false,
   },
   {
     id: "performance-review",
@@ -106,6 +119,7 @@ const suggestedTasks = [
     difficulty: "Medium",
     estimatedTime: "10-15 min",
     category: "Performance",
+    isAvailable: false,
   },
   {
     id: "documentation-check",
@@ -115,6 +129,7 @@ const suggestedTasks = [
     difficulty: "Easy",
     estimatedTime: "5-10 min",
     category: "Documentation",
+    isAvailable: false,
   },
   {
     id: "test-coverage",
@@ -124,6 +139,7 @@ const suggestedTasks = [
     difficulty: "Medium",
     estimatedTime: "10-15 min",
     category: "Testing",
+    isAvailable: false,
   },
   {
     id: "code-style",
@@ -133,15 +149,7 @@ const suggestedTasks = [
     difficulty: "Easy",
     estimatedTime: "5-8 min",
     category: "Style",
-  },
-  {
-    id: "dependency-audit",
-    title: "Dependency Audit",
-    description: "Review project dependencies for security issues and outdated packages",
-    icon: "📦",
-    difficulty: "Medium",
-    estimatedTime: "8-12 min",
-    category: "Dependencies",
+    isAvailable: false,
   },
 ];
 
@@ -336,8 +344,7 @@ export default function TaskSelector({
 
   const handleSmartModeSelect = () => {
     setAnalysisMode('smart');
-    // Clear quick task selection when switching to smart mode
-    onTaskSelect(''); // This will clear the selectedTask in parent component
+    // No need to clear task selection - smart mode operates independently
   };
 
   return (
@@ -745,12 +752,22 @@ export default function TaskSelector({
             {suggestedTasks.map((task) => (
               <Card 
                 key={task.id}
-                className={`cursor-pointer transition-all duration-200 hover:shadow-lg group ${
+                className={`transition-all duration-200 group ${
+                  task.isAvailable 
+                    ? 'cursor-pointer hover:shadow-lg' 
+                    : 'cursor-not-allowed opacity-50'
+                } ${
                   selectedTask === task.id 
                     ? 'ring-2 ring-primary border-primary shadow-lg shadow-primary/20 bg-primary/5' 
-                    : 'border-border hover:border-primary/50'
+                    : task.isAvailable 
+                      ? 'border-border hover:border-primary/50' 
+                      : 'border-border'
                 }`}
-                onClick={() => onTaskSelect(task.id)}
+                onClick={() => {
+                  if (task.isAvailable && (task.id === 'explore-codebase' || task.id === 'dependency-audit')) {
+                    onTaskSelect(task.id as TaskType);
+                  }
+                }}
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between mb-3">
@@ -761,7 +778,11 @@ export default function TaskSelector({
                       </Badge>
                     </div>
                   </div>
-                  <CardTitle className="text-lg group-hover:text-primary transition-colors">
+                  <CardTitle className={`text-lg transition-colors ${
+                    task.isAvailable 
+                      ? 'group-hover:text-primary' 
+                      : ''
+                  }`}>
                     {task.title}
                   </CardTitle>
                   <CardDescription className="text-sm leading-relaxed">

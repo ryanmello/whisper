@@ -43,7 +43,6 @@ class AnalysisService:
         self, 
         repository_url: str, 
         task_type: str = "explore-codebase", 
-        create_security_pr: bool = False,
         pr_options: Optional[Dict] = None
     ) -> str:
         """Create a new analysis task and return task ID."""
@@ -53,11 +52,10 @@ class AnalysisService:
         self.task_metadata[task_id] = {
             "repository_url": repository_url,
             "task_type": task_type,
-            "create_security_pr": create_security_pr,
             "pr_options": pr_options or {}
         }
         
-        logger.info(f"Created analysis task {task_id} for repository: {repository_url} (PR: {create_security_pr})")
+        logger.info(f"Created analysis task {task_id} for repository: {repository_url}")
         return task_id
     
     async def create_smart_task(
@@ -114,14 +112,13 @@ class AnalysisService:
         task_id: str, 
         repository_url: str, 
         task_type: str = "explore-codebase",
-        create_security_pr: bool = False,
         pr_options: Optional[Dict] = None
     ):
         """Start repository analysis with real-time updates (legacy method)."""
         
         # Create and track the analysis task
         analysis_task = asyncio.create_task(
-            self._run_legacy_analysis(task_id, repository_url, task_type, create_security_pr, pr_options)
+            self._run_legacy_analysis(task_id, repository_url, task_type, pr_options)
         )
         self.active_tasks[task_id] = analysis_task
         
@@ -177,7 +174,6 @@ class AnalysisService:
         task_id: str, 
         repository_url: str, 
         task_type: str,
-        create_security_pr: bool = False,
         pr_options: Optional[Dict] = None
     ):
         """Internal method to run the legacy analysis using WhisperAnalysisAgent."""
@@ -202,15 +198,8 @@ class AnalysisService:
                     create_pr=True,  # Always create PR for dependency audits
                     pr_options=pr_options
                 )
-            elif create_security_pr:
-                # Use PR-enabled analysis for other tasks
-                analysis_method = self.whisper_agent.analyze_repository_with_pr(
-                    repository_url, 
-                    create_security_pr, 
-                    pr_options
-                )
             else:
-                # Standard analysis workflow
+                # Standard analysis workflow (PR creation only available in dependency-audit mode)
                 analysis_method = self.whisper_agent.analyze_repository(repository_url)
             
             async for update in analysis_method:
@@ -245,44 +234,7 @@ class AnalysisService:
                     
                     last_progress = current_progress
                 
-                elif update["type"] == "github_pr_completed":
-                    # Send GitHub PR completion message
-                    await self.send_message(task_id, {
-                        "type": "github_pr.completed",
-                        "task_id": task_id,
-                        "pr_result": update["pr_result"]
-                    })
-                
-                elif update["type"] == "github_pr_error":
-                    # Send GitHub PR error message
-                    await self.send_message(task_id, {
-                        "type": "github_pr.error",
-                        "task_id": task_id,
-                        "error": update["error"]
-                    })
-                
-                elif update["type"] == "analysis_completed":
-                    # Send final analysis results (when using PR workflow)
-                    await self.send_message(task_id, {
-                        "type": "task.completed",
-                        "task_id": task_id,
-                        "results": {
-                            "summary": self._generate_summary(update["results"]),
-                            "statistics": self._generate_statistics(update["results"]),
-                            "detailed_results": {
-                                "whisper_analysis": {
-                                    "analysis": update["results"]["architectural_insights"],
-                                    "file_structure": update["results"]["file_structure"],
-                                    "language_analysis": update["results"]["language_analysis"],
-                                    "architecture_patterns": update["results"]["architecture_patterns"],
-                                    "main_components": update["results"]["main_components"],
-                                    "dependencies": update["results"]["dependencies"]
-                                }
-                            }
-                        }
-                    })
-                    break
-                
+
                 elif update["type"] == "completed":
                     # Send final results (traditional workflow or dependency audit)
                     results = update["results"]

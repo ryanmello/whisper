@@ -2,13 +2,18 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Task type validation
+export type TaskType = 'explore-codebase' | 'dependency-audit';
+
 // Legacy types (keeping for backward compatibility)
 export interface TaskResponse {
   task_id: string;
-  websocket_url: string;
   status: string;
-  repository_url: string;
+  message: string;
+  websocket_url: string;
   task_type: string;
+  repository_url: string;
+  github_pr_enabled: boolean;
 }
 
 export interface AnalysisProgress {
@@ -140,7 +145,7 @@ export class WhisperAPI {
   /**
    * Create a new analysis task (legacy method)
    */
-  static async createTask(repositoryUrl: string, taskType: string = 'explore-codebase'): Promise<TaskResponse> {
+  static async createTask(repositoryUrl: string, taskType: TaskType = 'explore-codebase'): Promise<TaskResponse> {
     try {
       const response = await fetch(`${API_BASE_URL}/api/tasks/`, {
         method: 'POST',
@@ -231,7 +236,7 @@ export class WhisperAPI {
     websocketUrl: string,
     taskId: string,
     repositoryUrl: string,
-    taskType: string,
+    taskType: TaskType,
     onMessage: (data: AnalysisProgress) => void,
     onError: (error: Event) => void,
     onClose: (event: CloseEvent) => void
@@ -348,47 +353,7 @@ export class WhisperAPI {
     }
   }
 
-  /**
-   * Create a security fix PR for dependency vulnerabilities
-   */
-  static async createSecurityPR(request: {
-    repository: string;
-    owner: string;
-    repo: string;
-    title: string;
-    description?: string;
-    target_branch: string;
-    dry_run: boolean;
-    vulnerability_data?: any;
-  }): Promise<{
-    success: boolean;
-    pr_url?: string;
-    preview_url?: string;
-    error?: string;
-  }> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/github/create-pr`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(request),
-      });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error('Error creating security PR:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-    }
-  }
 }
 
 /**

@@ -136,8 +136,7 @@ class GitHubIntegrationTester:
         try:
             payload = {
                 "repository_url": "https://github.com/gin-gonic/gin",  # Public Go repo
-                "task_type": "security-audit",
-                "create_security_pr": True,
+                "task_type": "dependency-audit",
                 "pr_options": {
                     "target_branch": "main",
                     "labels": ["test", "security"],

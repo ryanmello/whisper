@@ -4,12 +4,11 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { WhisperAPI, AnalysisProgress, extractRepoName } from "@/lib/api";
-import { GitHubPRDialog } from "./GitHubPRDialog";
+import { WhisperAPI, AnalysisProgress, TaskType, extractRepoName } from "@/lib/api";
 
 interface TaskExecutionProps {
   repository: string;
-  task: string;
+  task: TaskType;
   onBack: () => void;
 }
 
@@ -24,15 +23,10 @@ const taskConfig: Record<string, {
     icon: "🔍",
     description: "AI-powered comprehensive codebase analysis",
   },
-  "find-bugs": {
-    title: "Find Potential Bugs",
-    icon: "🐛",
-    description: "Identify potential issues and code quality problems",
-  },
-  "security-audit": {
-    title: "Security Audit",
-    icon: "🔒",
-    description: "Analyze security vulnerabilities and best practices",
+  "dependency-audit": {
+    title: "Dependency Audit",
+    icon: "📦",
+    description: "Analyze security vulnerabilities and create PR with fixes",
   },
 };
 
@@ -44,7 +38,6 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
   const [isConnecting, setIsConnecting] = useState(true);
   const [results, setResults] = useState<AnalysisProgress['results'] | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
-  const [showPRDialog, setShowPRDialog] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
   const taskInfo = taskConfig[task] || taskConfig["explore-codebase"];
@@ -494,32 +487,7 @@ export default function TaskExecution({ repository, task, onBack }: TaskExecutio
                 <Button onClick={onBack} variant="outline" size="sm">
                   ← Back to Analysis
                 </Button>
-                
-                {/* GitHub PR Creation Button for Security Issues */}
-                {results?.detailed_results?.whisper_analysis?.dependencies && (
-                  <Button 
-                    onClick={() => setShowPRDialog(true)}
-                    className="bg-green-600 hover:bg-green-700 text-white"
-                    size="sm"
-                  >
-                    🔧 Create Security Fix PR
-                  </Button>
-                )}
               </div>
-            )}
-
-            {/* GitHub PR Creation Dialog */}
-            {showPRDialog && (
-              <GitHubPRDialog
-                repository={repository}
-                vulnerabilityResults={results?.detailed_results}
-                onClose={() => setShowPRDialog(false)}
-                onSuccess={(prUrl: string) => {
-                  setShowPRDialog(false);
-                  // Show success message
-                  console.log('PR created:', prUrl);
-                }}
-              />
             )}
           </div>
         )}

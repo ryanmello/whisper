@@ -6,6 +6,7 @@ import RepositorySelector from "@/components/RepositorySelector";
 import TaskSelector from "@/components/TaskSelector";
 import TaskExecution from "@/components/TaskExecution";
 import SmartTaskExecution from "@/components/SmartTaskExecution";
+import { TaskType } from "@/lib/api";
 
 type Step = "repository" | "task" | "execution" | "smart-execution";
 
@@ -36,7 +37,7 @@ const STEPS = [
 export default function Home() {
   const [currentStep, setCurrentStep] = useState<Step>("repository");
   const [selectedRepository, setSelectedRepository] = useState<string>("");
-  const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskType | null>(null);
   
   // Smart analysis state
   const [smartAnalysisContext, setSmartAnalysisContext] = useState<string>("");
@@ -62,7 +63,7 @@ export default function Home() {
     scrollToTop();
   };
 
-  const handleTaskSelect = (task: string) => {
+  const handleTaskSelect = (task: TaskType | null) => {
     setSelectedTask(task);
   };
 
@@ -178,12 +179,6 @@ export default function Home() {
   const getTaskTitle = (task: string) => {
     const taskTitles: Record<string, string> = {
       "explore-codebase": "Explore Codebase",
-      "find-bugs": "Find Bugs",
-      "security-audit": "Security Audit",
-      "performance-review": "Performance Review",
-      "documentation-check": "Documentation Review",
-      "test-coverage": "Test Coverage",
-      "code-style": "Code Style Review",
       "dependency-audit": "Dependency Audit",
     };
     return taskTitles[task] || "Analysis";

@@ -4,6 +4,17 @@
 
 This enhancement adds GitHub Pull Request creation capability to the Whisper Analysis Agent's dependency audit feature. When vulnerabilities are found in Go dependencies, the agent can automatically create pull requests with fixes.
 
+## How It Works
+
+PR creation is **automatically triggered** when using the **`dependency-audit`** task type. Here's the workflow:
+
+1. Set task type to `"dependency-audit"` in your request
+2. Agent scans repository for Go dependency vulnerabilities  
+3. If vulnerabilities are found, agent automatically creates a PR with fixes
+4. No vulnerabilities found = no PR created (as expected)
+
+**Important**: PR creation only happens during dependency audits, not other analysis types.
+
 ## Features
 
 - **Automatic PR Creation**: Create pull requests to fix security vulnerabilities
@@ -44,8 +55,7 @@ Your GitHub token needs the following scopes:
 ```json
 {
   "repository_url": "https://github.com/example/go-project",
-  "task_type": "security-audit",
-  "create_security_pr": true,
+  "task_type": "dependency-audit",
   "pr_options": {
     "target_branch": "main",
     "reviewers": ["@security-team"],
@@ -202,8 +212,7 @@ curl -X POST "http://localhost:8000/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
     "repository_url": "https://github.com/your-username/test-go-project",
-    "task_type": "security-audit",
-    "create_security_pr": true,
+    "task_type": "dependency-audit",
     "pr_options": {
       "target_branch": "main",
       "labels": ["test", "security"],

@@ -11,8 +11,7 @@ class AnalysisRequest(BaseModel):
     repository_url: str = Field(..., description="GitHub repository URL")
     task_type: str = Field(default="explore-codebase", description="Type of analysis task")
     github_token: Optional[str] = Field(None, description="GitHub token for private repositories")
-    create_security_pr: bool = Field(default=False, description="Create GitHub PR for security fixes")
-    pr_options: Optional[Dict[str, Any]] = Field(None, description="Options for PR creation")
+    pr_options: Optional[Dict[str, Any]] = Field(None, description="Options for PR creation (only used with dependency-audit task type)")
     
     @field_validator('repository_url')
     @classmethod
@@ -28,11 +27,7 @@ class AnalysisRequest(BaseModel):
     @classmethod
     def validate_task_type(cls, v):
         """Validate task type."""
-        valid_types = [
-            'explore-codebase', 'find-bugs', 'security-audit', 
-            'performance-analysis', 'code-quality', 'documentation-review',
-            'dependency-analysis', 'architecture-review', 'dependency-audit'
-        ]
+        valid_types = ['explore-codebase', 'dependency-audit']
         if v not in valid_types:
             raise ValueError(f'Task type must be one of: {", ".join(valid_types)}')
         return v
@@ -81,6 +76,8 @@ class AnalysisResponse(BaseModel):
     status: str = Field(..., description="Task status")
     message: str = Field(..., description="Status message")
     websocket_url: str = Field(..., description="WebSocket URL for real-time updates")
+    task_type: str = Field(..., description="Type of analysis task")
+    repository_url: str = Field(..., description="GitHub repository URL")
     github_pr_enabled: bool = Field(default=False, description="Whether GitHub PR creation is enabled")
 
 class SmartAnalysisResponse(BaseModel):

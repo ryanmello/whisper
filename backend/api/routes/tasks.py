@@ -107,7 +107,6 @@ async def create_analysis_task(request: AnalysisRequest):
     task_id = await analysis_service.create_task(
         repository_url=request.repository_url,
         task_type=request.task_type,
-        create_security_pr=request.create_security_pr,
         pr_options=request.pr_options
     )
     
@@ -119,7 +118,9 @@ async def create_analysis_task(request: AnalysisRequest):
         status="created",
         message=f"Analysis task created for {request.repository_url}",
         websocket_url=websocket_url,
-        github_pr_enabled=request.create_security_pr
+        task_type=request.task_type,
+        repository_url=request.repository_url,
+        github_pr_enabled=(request.task_type == "dependency-audit")
     )
 
 @router.post("/smart-tasks/", response_model=SmartAnalysisResponse)
